@@ -910,7 +910,7 @@ app.put('/items/:itemId', async function (req, res) {
 });
 
 var PORT = process.env.PORT || 8000;
-var HOST = process.env.HOST || '127.0.0.1';
+var HOST = process.env.HOST || '0.0.0.0';
 app.listen(PORT, HOST, function () {
   console.log('API server listening on http://' + HOST + ':' + PORT);
 });
