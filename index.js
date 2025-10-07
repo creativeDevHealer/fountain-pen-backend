@@ -860,7 +860,7 @@ async function getCollectionHandle() {
 app.get('/items', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
-    var items = await collection.find({}).toArray();
+    var items = await collection.find({ $and: [ { title: /montblanc/i }, { title: /149/i } ] }).toArray();
     var itemsList = items.map(function (item) {
       return {
         id: String(item._id),
@@ -918,25 +918,25 @@ function startServer() {
 }
 
 // Run initial scrape pipeline before starting the server
-(function bootstrap() {
-  console.log('Bootstrap: starting initial scrape...');
-  Promise.resolve()
-    .then(function () { return main(); })
-    .then(function () {
-      console.log('Bootstrap: initial scrape completed.');
-    })
-    .catch(function (e) {
-      console.error('Bootstrap: initial scrape failed:', e);
-    })
-    .finally(function () {
-      startServer();
-    });
-})();
+// (function bootstrap() {
+//   console.log('Bootstrap: starting initial scrape...');
+//   Promise.resolve()
+//     .then(function () { return main(); })
+//     .then(function () {
+//       console.log('Bootstrap: initial scrape completed.');
+//     })
+//     .catch(function (e) {
+//       console.error('Bootstrap: initial scrape failed:', e);
+//     })
+//     .finally(function () {
+//       startServer();
+//     });
+// })();
 
 app.get('/', (req, res) => {
   res.send('Hello World');
 });
-
+startServer();
 // --- Schedule daily scrape at 00:00 (system local time) ---
 var isScheduledRunInProgress = false;
 cron.schedule('0 0 * * *', async function () {
