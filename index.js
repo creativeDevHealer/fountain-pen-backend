@@ -909,11 +909,29 @@ app.put('/items/:itemId', async function (req, res) {
   }
 });
 
-var PORT = process.env.PORT || 8000;
-var HOST = process.env.HOST || '0.0.0.0';
-app.listen(PORT, HOST, function () {
-  console.log('API server listening on http://' + HOST + ':' + PORT);
-});
+function startServer() {
+  var PORT = process.env.PORT || 8000;
+  var HOST = process.env.HOST || '0.0.0.0';
+  app.listen(PORT, HOST, function () {
+    console.log('API server listening on http://' + HOST + ':' + PORT);
+  });
+}
+
+// Run initial scrape pipeline before starting the server
+(function bootstrap() {
+  console.log('Bootstrap: starting initial scrape...');
+  Promise.resolve()
+    .then(function () { return main(); })
+    .then(function () {
+      console.log('Bootstrap: initial scrape completed.');
+    })
+    .catch(function (e) {
+      console.error('Bootstrap: initial scrape failed:', e);
+    })
+    .finally(function () {
+      startServer();
+    });
+})();
 
 app.get('/', (req, res) => {
   res.send('Hello World');
