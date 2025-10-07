@@ -915,6 +915,10 @@ app.listen(PORT, HOST, function () {
   console.log('API server listening on http://' + HOST + ':' + PORT);
 });
 
+app.get('/', (req, res) => {
+  res.send('Hello World');
+});
+
 // --- Schedule daily scrape at 00:00 (system local time) ---
 var isScheduledRunInProgress = false;
 cron.schedule('0 0 * * *', async function () {
