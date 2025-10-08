@@ -860,7 +860,11 @@ async function getCollectionHandle() {
 app.get('/items', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
-    var items = await collection.find({ $and: [ { title: /montblanc/i }, { title: /149/i } ] }).toArray();
+    var q = (req.query.q || '').toString().trim();
+    var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
+    var baseAnd = [ { title: /montblanc/i }, { title: /149/i } ];
+    if (titleFilter) baseAnd.push({ title: titleFilter });
+    var items = await collection.find({ $and: baseAnd }).toArray();
     var itemsList = items.map(function (item) {
       return {
         id: String(item._id),
@@ -884,6 +888,8 @@ app.get('/items', async function (req, res) {
 app.get('/items/today', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
+    var q = (req.query.q || '').toString().trim();
+    var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var start = new Date();
     start.setHours(0, 0, 0, 0);
     var end = new Date();
@@ -895,6 +901,7 @@ app.get('/items/today', async function (req, res) {
         { createdAt: { $gte: start, $lte: end } }
       ]
     };
+    if (titleFilter) query.$and.push({ title: titleFilter });
     var items = await collection.find(query).toArray();
     var itemsList = items.map(function (item) {
       return {
@@ -918,6 +925,8 @@ app.get('/items/today', async function (req, res) {
 app.get('/items/last3days', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
+    var q = (req.query.q || '').toString().trim();
+    var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var end = new Date();
     end.setHours(23, 59, 59, 999);
     var start = new Date();
@@ -930,6 +939,7 @@ app.get('/items/last3days', async function (req, res) {
         { createdAt: { $gte: start, $lte: end } }
       ]
     };
+    if (titleFilter) query.$and.push({ title: titleFilter });
     var items = await collection.find(query).toArray();
     var itemsList = items.map(function (item) {
       return {
@@ -953,6 +963,8 @@ app.get('/items/last3days', async function (req, res) {
 app.get('/items/saved', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
+    var q = (req.query.q || '').toString().trim();
+    var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var query = {
       $and: [
         { title: /montblanc/i },
@@ -960,6 +972,7 @@ app.get('/items/saved', async function (req, res) {
         { like: true }
       ]
     };
+    if (titleFilter) query.$and.push({ title: titleFilter });
     var items = await collection.find(query).toArray();
     var itemsList = items.map(function (item) {
       return {
@@ -983,6 +996,8 @@ app.get('/items/saved', async function (req, res) {
 app.get('/items/stats', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
+    var q = (req.query.q || '').toString().trim();
+    var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     var todayEnd = new Date();
@@ -993,6 +1008,7 @@ app.get('/items/stats', async function (req, res) {
     last3Start.setHours(0, 0, 0, 0);
 
     var baseFilter = { $and: [ { title: /montblanc/i }, { title: /149/i } ] };
+    if (titleFilter) baseFilter.$and.push({ title: titleFilter });
     function withDateRange(filter, start, end) {
       return { $and: [ baseFilter, { createdAt: { $gte: start, $lte: end } } ] };
     }
