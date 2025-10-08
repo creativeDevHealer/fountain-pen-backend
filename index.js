@@ -9,7 +9,7 @@ var puppeteer;
 
 var ebayScrapeConfig = {
     method: 'get',
-    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.ebay.com%2Fsch%2Fi.html%3F_nkw%3Dmontblanc%2B149%2Bfountain%2Bpen%26_sop%3D10%26rt%3Dnc%26LH_ItemCondition%3D1000%26_ipg%3D240&token=e65168739b7543deaba9693ad14d468ff6a220f3e39',
+    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.ebay.co.uk%2Fsch%2Fi.html%3F_stpos%3DSK62QN%26_svsrch%3D1%26_nkw%3D%E2%80%9Cmontblanc%E2%80%9D%2Band%2B%E2%80%9C149%E2%80%9D%26LH_TitleDesc%3D1%26_sop%3D10%26LH_PrefLoc%3D2%26_fcid%3D3%26_folent%3D42101235225%26mkevt%3D1%26mkpid%3D0%26emsid%3De11021.m164379.l178259%26mkcid%3D7%26ch%3Dosgood%26euid%3D4467d5740f154c16996dc9a56fcd53bc%26bu%3D43600934330%26ut%3DRU%26exe%3D0%26ext%3D0%26osub%3D-1%7E1%26crd%3D20251008033812%26segname%3D11021&token=e65168739b7543deaba9693ad14d468ff6a220f3e39',
     headers: {
     },
 };
@@ -1088,20 +1088,21 @@ app.get('/', (req, res) => {
 startServer();
 // --- Schedule daily scrape at 00:00 (system local time) ---
 var isScheduledRunInProgress = false;
-cron.schedule('0 0 * * *', async function () {
+// Run scrape every 6 hours at minute 0
+cron.schedule('0 */6 * * *', async function () {
   if (isScheduledRunInProgress) {
     console.log('Cron: previous run still in progress; skipping this cycle.');
     return;
   }
   isScheduledRunInProgress = true;
-  console.log('Cron: starting daily scrape at', new Date().toString());
+  console.log('Cron: starting scheduled scrape at', new Date().toString());
   try {
     await main();
   } catch (e) {
     console.error('Cron: main() failed:', e);
   } finally {
     isScheduledRunInProgress = false;
-    console.log('Cron: daily scrape finished at', new Date().toString());
+    console.log('Cron: scheduled scrape finished at', new Date().toString());
   }
 }, { scheduled: true });
 
