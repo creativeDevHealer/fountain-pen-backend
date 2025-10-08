@@ -868,7 +868,8 @@ app.get('/items', async function (req, res) {
         price: item.price,
         image: item.image,
         url: item.link,
-        saved: !!item.like
+        saved: !!item.like,
+        createdAt: item.createdAt,
       };
     });
     res.json(itemsList);
@@ -877,6 +878,138 @@ app.get('/items', async function (req, res) {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
+
+// GET /items/today → items created today
+app.get('/items/today', async function (req, res) {
+  try {
+    var collection = await getCollectionHandle();
+    var start = new Date();
+    start.setHours(0, 0, 0, 0);
+    var end = new Date();
+    end.setHours(23, 59, 59, 999);
+    var query = {
+      $and: [
+        { title: /montblanc/i },
+        { title: /149/i },
+        { createdAt: { $gte: start, $lte: end } }
+      ]
+    };
+    var items = await collection.find(query).toArray();
+    var itemsList = items.map(function (item) {
+      return {
+        id: String(item._id),
+        name: item.title,
+        price: item.price,
+        image: item.image,
+        url: item.link,
+        saved: !!item.like,
+        createdAt: item.createdAt,
+      };
+    });
+    res.json(itemsList);
+  } catch (err) {
+    console.error('GET /items/today error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /items/last3days → items from last 3 days
+app.get('/items/last3days', async function (req, res) {
+  try {
+    var collection = await getCollectionHandle();
+    var end = new Date();
+    end.setHours(23, 59, 59, 999);
+    var start = new Date();
+    start.setDate(end.getDate() - 3);
+    start.setHours(0, 0, 0, 0);
+    var query = {
+      $and: [
+        { title: /montblanc/i },
+        { title: /149/i },
+        { createdAt: { $gte: start, $lte: end } }
+      ]
+    };
+    var items = await collection.find(query).toArray();
+    var itemsList = items.map(function (item) {
+      return {
+        id: String(item._id),
+        name: item.title,
+        price: item.price,
+        image: item.image,
+        url: item.link,
+        saved: !!item.like,
+        createdAt: item.createdAt,
+      };
+    });
+    res.json(itemsList);
+  } catch (err) {
+    console.error('GET /items/last3days error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /items/saved → items with like=true
+app.get('/items/saved', async function (req, res) {
+  try {
+    var collection = await getCollectionHandle();
+    var query = {
+      $and: [
+        { title: /montblanc/i },
+        { title: /149/i },
+        { like: true }
+      ]
+    };
+    var items = await collection.find(query).toArray();
+    var itemsList = items.map(function (item) {
+      return {
+        id: String(item._id),
+        name: item.title,
+        price: item.price,
+        image: item.image,
+        url: item.link,
+        saved: !!item.like,
+        createdAt: item.createdAt,
+      };
+    });
+    res.json(itemsList);
+  } catch (err) {
+    console.error('GET /items/saved error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /items/stats → counts for today, last3days, saved
+app.get('/items/stats', async function (req, res) {
+  try {
+    var collection = await getCollectionHandle();
+    var todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    var todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+
+    var last3Start = new Date();
+    last3Start.setDate(todayEnd.getDate() - 3);
+    last3Start.setHours(0, 0, 0, 0);
+
+    var baseFilter = { $and: [ { title: /montblanc/i }, { title: /149/i } ] };
+    function withDateRange(filter, start, end) {
+      return { $and: [ baseFilter, { createdAt: { $gte: start, $lte: end } } ] };
+    }
+
+    var [todayCount, last3DaysCount, savedCount] = await Promise.all([
+      collection.countDocuments(withDateRange(baseFilter, todayStart, todayEnd)),
+      collection.countDocuments(withDateRange(baseFilter, last3Start, todayEnd)),
+      collection.countDocuments({ $and: [ baseFilter, { like: true } ] })
+    ]);
+
+    res.json({ today: todayCount || 0, last3days: last3DaysCount || 0, saved: savedCount || 0 });
+  } catch (err) {
+    console.error('GET /items/stats error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 
 // PUT /items/:itemId?saved=true|false → update saved flag and return updated item
 app.put('/items/:itemId', async function (req, res) {
