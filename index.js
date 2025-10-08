@@ -1067,25 +1067,25 @@ function startServer() {
 }
 
 // Run initial scrape pipeline before starting the server
-// (function bootstrap() {
-//   console.log('Bootstrap: starting initial scrape...');
-//   Promise.resolve()
-//     .then(function () { return main(); })
-//     .then(function () {
-//       console.log('Bootstrap: initial scrape completed.');
-//     })
-//     .catch(function (e) {
-//       console.error('Bootstrap: initial scrape failed:', e);
-//     })
-//     .finally(function () {
-//       startServer();
-//     });
-// })();
+(function bootstrap() {
+  console.log('Bootstrap: starting initial scrape...');
+  Promise.resolve()
+    .then(function () { return main(); })
+    .then(function () {
+      console.log('Bootstrap: initial scrape completed.');
+    })
+    .catch(function (e) {
+      console.error('Bootstrap: initial scrape failed:', e);
+    })
+    .finally(function () {
+      startServer();
+    });
+})();
 
 app.get('/', (req, res) => {
   res.send('Hello World');
 });
-startServer();
+// startServer();
 // --- Schedule daily scrape at 00:00 (system local time) ---
 var isScheduledRunInProgress = false;
 // Run scrape every 6 hours at minute 0
