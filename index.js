@@ -58,6 +58,7 @@ async function saveProductsToMongo(products) {
         image: (p.imageUrl || '').trim(),
         from: (p.from || '').trim(),
         like: false,
+        viewed: false,
         updatedAt: new Date()
       };
       if (!doc.link) {
@@ -67,7 +68,7 @@ async function saveProductsToMongo(products) {
       try {
         var existing = await collection.findOne({ title: doc.title });
         var exsting1 = await collection.findOne({ link: doc.link });
-        if (existing) {
+        if (existing && exsting1) {
           await collection.updateOne({ _id: existing._id }, { $set: doc });
           summary.updated += 1;
         } else if(exsting1) {
@@ -873,6 +874,7 @@ app.get('/items', async function (req, res) {
         image: item.image,
         url: item.link,
         saved: !!item.like,
+        viewed: !!item.viewed,
         createdAt: item.createdAt,
       };
     });
@@ -1032,13 +1034,24 @@ app.put('/items/:itemId', async function (req, res) {
   try {
     var itemId = req.params.itemId;
     var savedParam = req.query.saved;
+    var viewedParam = req.query.viewed;
     if (typeof savedParam === 'undefined' && req.body && typeof req.body.saved !== 'undefined') {
       savedParam = req.body.saved;
     }
+    if (typeof viewedParam === 'undefined' && req.body && typeof req.body.viewed !== 'undefined') {
+      viewedParam = req.body.viewed;
+    }
+    var hasSaved = (typeof savedParam !== 'undefined');
+    var hasViewed = (typeof viewedParam !== 'undefined');
     var saved = (savedParam === true || savedParam === 'true' || savedParam === '1' || savedParam === 1);
+    var viewed = (viewedParam === true || viewedParam === 'true' || viewedParam === '1' || viewedParam === 1);
+
+    var setFields = { updatedAt: new Date() };
+    if (hasSaved) setFields.like = saved;
+    if (hasViewed) setFields.viewed = viewed;
 
     var collection = await getCollectionHandle();
-    var result = await collection.updateOne({ _id: new ObjectId(itemId) }, { $set: { like: saved } });
+    var result = await collection.updateOne({ _id: new ObjectId(itemId) }, { $set: setFields });
     if (!result || result.matchedCount === 0) {
       res.status(404).json({ detail: 'Item not found' });
       return;
@@ -1050,7 +1063,8 @@ app.put('/items/:itemId', async function (req, res) {
       price: item.price,
       image: item.image,
       url: item.link,
-      saved: !!item.like
+      saved: !!item.like,
+      viewed: !!item.viewed
     });
   } catch (err) {
     console.error('PUT /items/:itemId error:', err);
