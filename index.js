@@ -913,6 +913,7 @@ app.get('/items/today', async function (req, res) {
         image: item.image,
         url: item.link,
         saved: !!item.like,
+        viewed: !!item.viewed,
         createdAt: item.createdAt,
       };
     });
@@ -951,6 +952,7 @@ app.get('/items/last3days', async function (req, res) {
         image: item.image,
         url: item.link,
         saved: !!item.like,
+        viewed: !!item.viewed,
         createdAt: item.createdAt,
       };
     });
@@ -984,6 +986,7 @@ app.get('/items/saved', async function (req, res) {
         image: item.image,
         url: item.link,
         saved: !!item.like,
+        viewed: !!item.viewed,
         createdAt: item.createdAt,
       };
     });
