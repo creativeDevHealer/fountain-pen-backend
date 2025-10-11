@@ -897,7 +897,7 @@ async function dylanStephenScrapePage(url) {
         var results = await page.evaluate(function () {
             function abs(u) {
                 if (!u) return '';
-                if (/^https?:\/\//i.test(u)) return u;
+                if (/^(https?:|data:|blob:)/i.test(u)) return u; // already absolute or data/blob
                 if (u.indexOf('//') === 0) return 'https:' + u;
                 if (u.charAt(0) !== '/') u = '/' + u;
                 return window.location.origin + u;
@@ -1177,15 +1177,30 @@ async function vintageAndModernPensScrapePage(url) {
                 var href = a ? a.getAttribute('href') : '';
                 var title = titleFrom(p, a);
                 if (!href && !title) return;
-                var imgEl = p.querySelector('img');
-                var img = '';
-                if (imgEl) {
-                    var ss = (imgEl.getAttribute('srcset') || imgEl.getAttribute('data-srcset') || '').trim();
-                    if (ss) img = (ss.split(',')[0] || '').trim().split(' ')[0] || '';
-                    if (!img) img = (imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '');
+                function fromSrcset(ss) {
+                    try {
+                        if (!ss) return '';
+                        var parts = ss.split(',').map(function (s) { return s.trim().split(' ')[0]; }).filter(Boolean);
+                        // pick last (usually largest)
+                        return parts.length ? parts[parts.length - 1] : '';
+                    } catch (e) { return ''; }
                 }
+                var img = '';
+                var imgEl = p.querySelector('img');
+                var sourceEl = p.querySelector('picture source[srcset], source[srcset]');
+                // Prefer picture/source srcset if present
+                if (sourceEl && sourceEl.getAttribute('srcset')) {
+                    img = fromSrcset(sourceEl.getAttribute('srcset'));
+                }
+                if (!img && imgEl) {
+                    var ss = (imgEl.getAttribute('data-srcset') || imgEl.getAttribute('srcset') || '').trim();
+                    if (ss) img = fromSrcset(ss);
+                    if (!img) img = (imgEl.getAttribute('data-lazy-src') || imgEl.getAttribute('data-ll-src') || imgEl.getAttribute('data-original') || imgEl.getAttribute('data-src') || imgEl.getAttribute('src') || '');
+                }
+                // Avoid base64 placeholders
+                if (/^data:/i.test(img)) img = '';
                 var price = extractPrice(p.textContent || '');
-                items.push({ title: title, productUrl: abs(href), imageUrl: abs(img), price: price });
+                items.push({ title: title, productUrl: abs(href), imageUrl: img ? abs(img) : '', price: price });
             });
             // Also look for older entries pagination blocks if present
             if (items.length === 0) {
