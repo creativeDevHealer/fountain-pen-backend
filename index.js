@@ -5,6 +5,7 @@ var MongoClient = require('mongodb').MongoClient;
 var ObjectId = require('mongodb').ObjectId;
 var cron = require('node-cron');
 var puppeteer;
+var fs = require('fs');
 
 
 var ebayScrapeConfig = {
@@ -73,6 +74,9 @@ async function saveProductsToMongo(products) {
           summary.updated += 1;
         } else if(exsting1) {
           await collection.updateOne({ _id: exsting1._id }, { $set: doc });
+          summary.updated += 1;
+        } else if (existing && existing.from === 'ebay') {
+          await collection.updateOne({ _id: exsting._id }, { $set: doc });
           summary.updated += 1;
         } else {
           doc.createdAt = new Date();
@@ -810,12 +814,416 @@ async function carousellScrape(){
         console.log(error);
     });
 }
+
+// Scrape Dylan Stephen search results using Puppeteer
+async function dylanStephenScrapePage(url) {
+    console.log('Dylan Stephen scraping (Puppeteer) started');
+    if (!puppeteer) {
+        try { puppeteer = require('puppeteer'); } catch (e) {
+            console.error('Puppeteer not installed. Run npm install puppeteer');
+            return;
+        }
+    }
+    var browser;
+    try {
+        browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+        var page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1366, height: 900 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+
+        // Attempt to accept cookie banner if present
+        try {
+            await page.waitForTimeout(1200);
+            await page.evaluate(function () {
+                var btns = Array.prototype.slice.call(document.querySelectorAll('button, a, [role="button"]'));
+                var accept = btns.find(function (b) {
+                    var t = ((b.innerText || b.textContent || '') + '').toLowerCase();
+                    return /accept|agree|consent/.test(t);
+                });
+                if (accept) accept.click();
+            });
+        } catch (e) {}
+
+        // Wait for product grid
+        await page.waitForSelector('ul.products li.product, .products .product, .woocommerce ul.products', { timeout: 60000 });
+
+        // Scroll to bottom to load lazy assets
+        async function autoScroll(p) {
+            await p.evaluate(async function () {
+                await new Promise(function (resolve) {
+                    var total = 0;
+                    var step = 600;
+                    var timer = setInterval(function () {
+                        var scrollHeight = document.body.scrollHeight;
+                        window.scrollBy(0, step);
+                        total += step;
+                        if (total >= scrollHeight - window.innerHeight - 100) {
+                            clearInterval(timer);
+                            resolve();
+                        }
+                    }, 200);
+                });
+            });
+        }
+        await autoScroll(page);
+
+        var results = await page.evaluate(function () {
+            function abs(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u;
+                if (u.indexOf('//') === 0) return 'https:' + u;
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return window.location.origin + u;
+            }
+            function text(el, sel) {
+                var n = el.querySelector(sel);
+                return n ? (n.textContent || '').trim() : '';
+            }
+            function imgSrc(el) {
+                var img = el.querySelector('img');
+                if (!img) return '';
+                return (img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '').trim();
+            }
+
+            var items = [];
+            var nodes = document.querySelectorAll('ul.products li.product, .products li.product, li.product');
+            nodes.forEach(function (node) {
+                var a = node.querySelector('a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link, a[href*="/product/"]') || node.querySelector('a[href]');
+                var productUrl = a ? abs(a.getAttribute('href') || '') : '';
+                var title = text(node, 'h2, .woocommerce-loop-product__title, .product-title, h3');
+                var price = text(node, '.price, .woocommerce-Price-amount, .amount');
+                var img = imgSrc(node);
+                if (!productUrl && !title) return;
+                items.push({ title: title || '', productUrl: productUrl || '', imageUrl: img || '', price: (price || '').trim() || '-' });
+            });
+            return items;
+        });
+
+        if (!Array.isArray(results)) results = [];
+        results.forEach(function (p) {
+            products.push({
+                title: p.title || '',
+                productUrl: p.productUrl || '',
+                imageUrl: p.imageUrl || '',
+                price: p.price || '-',
+                detail: '',
+                from: 'dylanStephen'
+            });
+        });
+        console.log('Dylan Stephen extracted ' + results.length + ' product(s).');
+    } catch (err) {
+        console.error('Dylan Stephen Puppeteer error:', err && (err.message || err));
+    } finally {
+        if (browser) {
+            try { await browser.close(); } catch (e) {}
+        }
+    }
+}
+
+// Scrape Pen Lover Boutique (Shopify) search results using Puppeteer
+async function penLoverBoutiqueScrapePage(url) {
+    console.log('Pen Lover Boutique scraping (Puppeteer) started');
+    if (!puppeteer) {
+        try { puppeteer = require('puppeteer'); } catch (e) {
+            console.error('Puppeteer not installed. Run npm install puppeteer');
+            return;
+        }
+    }
+    var browser;
+    try {
+        browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+        var page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit(537.36) Chrome/118 Safari/537.36');
+        await page.setViewport({ width: 1366, height: 900 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+
+        // Wait for product links to be present
+        await page.waitForSelector('a[href*="/products/"]', { timeout: 60000 });
+
+        // Scroll to load images if lazy
+        async function autoScroll(p) {
+            await p.evaluate(async function () {
+                await new Promise(function (resolve) {
+                    var total = 0;
+                    var step = 600;
+                    var timer = setInterval(function () {
+                        var sh = document.body.scrollHeight;
+                        window.scrollBy(0, step);
+                        total += step;
+                        if (total >= sh - window.innerHeight - 100) {
+                            clearInterval(timer);
+                            resolve();
+                        }
+                    }, 200);
+                });
+            });
+        }
+        await autoScroll(page);
+
+        var results = await page.evaluate(function () {
+            function abs(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u;
+                if (u.indexOf('//') === 0) return 'https:' + u;
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return window.location.origin + u;
+            }
+            function getPrice(root) {
+                var selectors = [
+                    '.price-item--regular',
+                    '.price__regular .price-item',
+                    '.price',
+                    '.money',
+                ];
+                for (var i = 0; i < selectors.length; i++) {
+                    var n = root.querySelector(selectors[i]);
+                    if (n && n.textContent) return n.textContent.replace(/\s+/g, ' ').trim();
+                }
+                // Fallback: search for currency symbols
+                var txt = (root.textContent || '').replace(/\s+/g, ' ').trim();
+                var m = txt.match(/(€|EUR|£|GBP|\$|USD)\s?\d[\d.,]*/);
+                return m ? m[0] : '-';
+            }
+            function imgSrc(root) {
+                var img = root.querySelector('img');
+                if (!img) return '';
+                return (img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '').trim();
+            }
+
+            var items = [];
+            // Product cards often wrapped in li or div; we traverse anchors and build unique cards
+            var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="/products/"]'));
+            var seen = {};
+            anchors.forEach(function (a) {
+                var href = a.getAttribute('href') || '';
+                if (!href || seen[href]) return;
+                seen[href] = true;
+                var card = a.closest('li, article, .card, .product-item, .grid__item, .product') || a;
+                var title = (a.getAttribute('title') || (card && card.querySelector('h2, h3, .card__heading, .product-title'))?.textContent || a.textContent || '').replace(/\s+/g, ' ').trim();
+                var price = getPrice(card || a);
+                var img = imgSrc(card || a);
+                items.push({ title: title, productUrl: abs(href), imageUrl: abs(img), price: price });
+            });
+            return items;
+        });
+
+        if (!Array.isArray(results)) results = [];
+        results.forEach(function (p) {
+            products.push({
+                title: p.title || '',
+                productUrl: p.productUrl || '',
+                imageUrl: p.imageUrl || '',
+                price: p.price || '-',
+                detail: '',
+                from: 'penLoverBoutique'
+            });
+        });
+        console.log('Pen Lover Boutique extracted ' + results.length + ' product(s).');
+    } catch (err) {
+        console.error('Pen Lover Boutique Puppeteer error:', err && (err.message || err));
+    } finally {
+        if (browser) { try { await browser.close(); } catch (e) {} }
+    }
+}
+
+// Scrape Vintage and Modern Pens search results (WordPress)
+async function vintageAndModernPensScrapePage(url) {
+    console.log('Vintage & Modern Pens scraping (Puppeteer) started');
+    if (!puppeteer) {
+        try { puppeteer = require('puppeteer'); } catch (e) {
+            console.error('Puppeteer not installed. Run npm install puppeteer');
+            return;
+        }
+    }
+    var browser;
+    try {
+        browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+        var page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1366, height: 900 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+        await page.waitForSelector('article, .post, h2 a', { timeout: 60000 });
+        var results = await page.evaluate(function () {
+            function abs(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u;
+                if (u.indexOf('//') === 0) return 'https:' + u;
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return window.location.origin + u;
+            }
+            function extractPrice(txt) {
+                var m = (txt || '').replace(/\s+/g, ' ').match(/(£|GBP|€|EUR|\$|USD)\s?\d[\d.,]*/i);
+                return m ? m[0] : '-';
+            }
+            var items = [];
+            var posts = Array.prototype.slice.call(document.querySelectorAll('article, .post'));
+            posts.forEach(function (p) {
+                var a = p.querySelector('h2 a, h1 a, a[href]');
+                var href = a ? a.getAttribute('href') : '';
+                var title = a ? (a.textContent || '').trim() : '';
+                if (!href && !title) return;
+                var img = (p.querySelector('img') && (p.querySelector('img').getAttribute('src') || p.querySelector('img').getAttribute('data-src'))) || '';
+                var price = extractPrice(p.textContent || '');
+                items.push({ title: title, productUrl: abs(href), imageUrl: abs(img), price: price });
+            });
+            // Also look for older entries pagination blocks if present
+            if (items.length === 0) {
+                var anchors = Array.prototype.slice.call(document.querySelectorAll('h2 a[href]'));
+                anchors.forEach(function (a) {
+                    var href = a.getAttribute('href') || '';
+                    var title = (a.textContent || '').trim();
+                    if (!href || !title) return;
+                    items.push({ title: title, productUrl: abs(href), imageUrl: '', price: '-' });
+                });
+            }
+            return items;
+        });
+        (results || []).forEach(function (p) {
+            products.push({ title: p.title || '', productUrl: p.productUrl || '', imageUrl: p.imageUrl || '', price: p.price || '-', detail: '', from: 'vintageAndModernPens' });
+        });
+        console.log('Vintage & Modern Pens extracted ' + (results ? results.length : 0) + ' product(s).');
+    } catch (err) {
+        console.error('Vintage & Modern Pens Puppeteer error:', err && (err.message || err));
+    } finally {
+        if (browser) { try { await browser.close(); } catch (e) {} }
+    }
+}
+
+// Scrape Catawiki search results
+async function catawikiScrapePage(url) {
+    console.log('Catawiki scraping (Puppeteer) started');
+    if (!puppeteer) {
+        try { puppeteer = require('puppeteer'); } catch (e) {
+            console.error('Puppeteer not installed. Run npm install puppeteer');
+            return;
+        }
+    }
+    var browser;
+    try {
+        browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+        var page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1366, height: 900 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+        await page.waitForSelector('a[href*="/en/l/"]', { timeout: 60000 });
+        var results = await page.evaluate(function () {
+            function abs(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u;
+                if (u.indexOf('//') === 0) return 'https:' + u;
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return window.location.origin + u.split('?')[0];
+            }
+            var items = [];
+            var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="/en/l/"]'));
+            var seen = {};
+            anchors.forEach(function (a) {
+                var href = a.getAttribute('href') || '';
+                if (!href || seen[href]) return; seen[href] = true;
+                var card = a.closest('article, li, div');
+                var title = (a.getAttribute('title') || (card && card.querySelector('[data-testid], h3, h2, .title'))?.textContent || a.textContent || '').replace(/\s+/g, ' ').trim();
+                var img = '';
+                var imgEl = (card && card.querySelector('img')) || a.querySelector('img');
+                if (imgEl) img = imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '';
+                items.push({ title: title, productUrl: abs(href), imageUrl: abs(img), price: '-' });
+            });
+            return items;
+        });
+        (results || []).forEach(function (p) {
+            products.push({ title: p.title || '', productUrl: p.productUrl || '', imageUrl: p.imageUrl || '', price: p.price || '-', detail: '', from: 'catawiki' });
+        });
+        console.log('Catawiki extracted ' + (results ? results.length : 0) + ' product(s).');
+    } catch (err) {
+        console.error('Catawiki Puppeteer error:', err && (err.message || err));
+    } finally {
+        if (browser) { try { await browser.close(); } catch (e) {} }
+    }
+}
+
+// Scrape Milanuncios search results
+async function milanunciosScrapePage(url) {
+    console.log('Milanuncios scraping (Puppeteer) started');
+    if (!puppeteer) {
+        try { puppeteer = require('puppeteer'); } catch (e) {
+            console.error('Puppeteer not installed. Run npm install puppeteer');
+            return;
+        }
+    }
+    var browser;
+    try {
+        browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+        var page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1366, height: 900 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+        await page.waitForSelector('a[href*="/anuncios/"], article a[href]', { timeout: 60000 });
+        var results = await page.evaluate(function () {
+            function abs(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u;
+                if (u.indexOf('//') === 0) return 'https:' + u;
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return window.location.origin + u.split('?')[0];
+            }
+            function priceFrom(el) {
+                var txt = (el.textContent || '').replace(/\s+/g, ' ');
+                var m = txt.match(/(€|EUR|£|GBP|\$|USD)\s?\d[\d.,]*/);
+                return m ? m[0] : '-';
+            }
+            var items = [];
+            var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="/anuncios/"]'));
+            var seen = {};
+            anchors.forEach(function (a) {
+                var href = a.getAttribute('href') || '';
+                if (!href || seen[href]) return; seen[href] = true;
+                var card = a.closest('article, li, .aditem, .ma-AdCard-body, .ma-AdCard') || a;
+                var title = (a.getAttribute('title') || (card && card.querySelector('h2, h3, .ma-AdCard-title'))?.textContent || a.textContent || '').replace(/\s+/g, ' ').trim();
+                var imgEl = (card && card.querySelector('img')) || a.querySelector('img');
+                var img = imgEl ? (imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '') : '';
+                var price = priceFrom(card || a);
+                items.push({ title: title, productUrl: abs(href), imageUrl: abs(img), price: price });
+            });
+            return items;
+        });
+        (results || []).forEach(function (p) {
+            products.push({ title: p.title || '', productUrl: p.productUrl || '', imageUrl: p.imageUrl || '', price: p.price || '-', detail: '', from: 'milanuncios' });
+        });
+        console.log('Milanuncios extracted ' + (results ? results.length : 0) + ' product(s).');
+    } catch (err) {
+        console.error('Milanuncios Puppeteer error:', err && (err.message || err));
+    } finally {
+        if (browser) { try { await browser.close(); } catch (e) {} }
+    }
+}
 async function saveAllProductsToMongo() {
   return saveProductsToMongo(products).then(function () {
     console.log('MongoDB upsert complete.');
   }).catch(function (e) {
     console.error('Mongo upsert error:', e);
   });
+}
+function saveProductsToFile(list, filePath) {
+  try {
+    var items = Array.isArray(list) ? list : [];
+    var ts = new Date();
+    function pad(n) { return (n < 10 ? ('0' + n) : n); }
+    var defaultName = 'products_' + ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes()) + pad(ts.getSeconds()) + '.json';
+    var path = filePath || defaultName;
+    var minimal = items.map(function (p) {
+      return {
+        title: (p.title || '').toString(),
+        productUrl: (p.productUrl || '').toString(),
+        imageUrl: (p.imageUrl || '').toString(),
+        price: (p.price || '-').toString(),
+        from: (p.from || '').toString()
+      };
+    });
+    fs.writeFileSync(path, JSON.stringify(minimal, null, 2), 'utf8');
+    console.log('Saved ' + minimal.length + ' product(s) to file ' + path);
+  } catch (e) {
+    console.error('Failed to save products file:', e);
+  }
 }
 async function main() {
     try {
@@ -825,6 +1233,12 @@ async function main() {
         await invaluableScrapePage('https://www.invaluable.com/search?upcoming=false&query=montblanc%2520149%2520fountain%2520pen&keyword=montblanc%2520149%2520fountain%2520pen');
         await salesroomScrapePage('https://www.the-saleroom.com/en-gb/search-results?searchterm=montblanc%20fountain%20pen&sortterm=publishedDate');
         await carousellScrape();
+        await dylanStephenScrapePage('https://www.dylanstephenpens.co.uk/?s=%22montblanc%22+and+%22149%22');
+        await penLoverBoutiqueScrapePage('https://penloverboutique.com/search?type=product&options%5Bprefix%5D=last&q=%22montblanc%22+and+%22149%22');
+        await vintageAndModernPensScrapePage('https://www.vintageandmodernpens.co.uk/?s=montblanc+149');
+        await catawikiScrapePage('https://www.catawiki.com/en/s?q=%22montblanc%22+and+%22149%22&filters=966%255B%255D%3D87393%26l2_categories%255B%255D%3D1375');
+        await milanunciosScrapePage('https://www.milanuncios.com/anuncios/?s=montblanc%20149&orden=relevance&fromSearch=1&fromSuggester=0&suggestionUsed=0&hitOrigin=home_search&recentSearchShowed=0&recentSearchUsed=0');
+        // await saveProductsToFile(products, 'products_all.json');
         await saveAllProductsToMongo();
         console.log('All done.');
     } catch (err) {
