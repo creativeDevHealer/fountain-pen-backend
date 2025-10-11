@@ -169,6 +169,22 @@ async function ebayScrape() {
             $list = $('ul.srp-results');
         }
 
+        function normalizeEbayUrl(u) {
+            try {
+                if (!u) return '';
+                var nofrag = (u.split('#')[0] || '');
+                var noquery = (nofrag.split('?')[0] || '');
+                // Match patterns like /itm/389080551746 or /itm/Some-Title/389080551746
+                var m = noquery.match(/\/itm\/(?:[^\/]+\/)?(\d{6,})/i);
+                var originMatch = noquery.match(/^https?:\/\/[^\/]+/i);
+                var origin = originMatch ? originMatch[0] : '';
+                if (m && m[1] && origin) {
+                    return origin + '/itm/' + m[1];
+                }
+                return noquery;
+            } catch (e) { return (u || '').split('?')[0].split('#')[0]; }
+        }
+
         var items = ($list.length ? $list.find('li') : $('li')).toArray();
         items.forEach(function (el) {
             var node = $(el);
@@ -185,6 +201,7 @@ async function ebayScrape() {
             if (!productUrl) return;
             if (productUrl.indexOf('/srv/survey/') !== -1) return; // exclude survey/FAQ cards
             if (productUrl.indexOf('/itm/') === -1) return; // must be an item link
+            productUrl = normalizeEbayUrl(productUrl);
 
             // Title
             var titleText = node.find('.s-card__title, .s-item__title, h3, [role="heading"][aria-level] .su-styled-text').first().text().trim();
@@ -831,7 +848,7 @@ async function dylanStephenScrapePage(url) {
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
-        await page.waitForTimeout(1500);
+        await new Promise(function (r) { setTimeout(r, 1500); });
 
         // Attempt to accept cookie banner if present
         try {
@@ -889,10 +906,40 @@ async function dylanStephenScrapePage(url) {
                 var n = el.querySelector(sel);
                 return n ? (n.textContent || '').trim() : '';
             }
+            function textFrom(root, selectors) {
+                for (var i = 0; i < selectors.length; i++) {
+                    var n = root.querySelector(selectors[i]);
+                    if (n && n.textContent) {
+                        var t = n.textContent.replace(/\s+/g, ' ').trim();
+                        if (t && t.length > 2 && !/^\W+$/.test(t)) return t;
+                    }
+                }
+                return '';
+            }
             function imgSrc(el) {
                 var img = el.querySelector('img');
                 if (!img) return '';
                 return (img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '').trim();
+            }
+            function titleFrom(node, a) {
+                // 1) attributes on anchor
+                var t = (a && (a.getAttribute('title') || a.getAttribute('aria-label'))) || '';
+                if (t) return t.replace(/\s+/g, ' ').trim();
+                // 2) explicit title nodes
+                t = textFrom(node, ['.woocommerce-loop-product__title', '.product-title', 'h2.woocommerce-loop-product__title', 'h2', 'h3']);
+                if (t) return t;
+                // 3) img alt
+                var img = node.querySelector('img');
+                if (img) {
+                    var alt = (img.getAttribute('alt') || '').trim();
+                    if (alt && alt.length > 2) return alt;
+                }
+                // 4) anchor text (filter out lone symbols like + or *)
+                if (a && a.textContent) {
+                    var at = a.textContent.replace(/\s+/g, ' ').trim();
+                    if (at && at.length > 2 && !/^\W+$/.test(at)) return at;
+                }
+                return '';
             }
 
             var items = [];
@@ -904,8 +951,7 @@ async function dylanStephenScrapePage(url) {
             nodes.forEach(function (node) {
                 var a = node.querySelector('a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link, a[href*="/product/"]') || node.querySelector('a[href]');
                 var productUrl = a ? abs(a.getAttribute('href') || '') : '';
-                var title = text(node, 'h2, .woocommerce-loop-product__title, .product-title, h3');
-                if (!title && a) title = (a.getAttribute('title') || a.textContent || '').trim();
+                var title = titleFrom(node, a);
                 var price = text(node, '.price, .woocommerce-Price-amount, .amount');
                 var img = imgSrc(node);
                 if (!productUrl && !title) return;
@@ -983,8 +1029,16 @@ async function penLoverBoutiqueScrapePage(url) {
                 if (u.charAt(0) !== '/') u = '/' + u;
                 return window.location.origin + u;
             }
+            function textFrom(root, selectors) {
+                for (var i = 0; i < selectors.length; i++) {
+                    var n = root.querySelector(selectors[i]);
+                    if (n && n.textContent) return n.textContent.replace(/\s+/g, ' ').trim();
+                }
+                return '';
+            }
             function getPrice(root) {
                 var selectors = [
+                    '.price__sale .price-item--sale',
                     '.price-item--regular',
                     '.price__regular .price-item',
                     '.price',
@@ -1002,6 +1056,12 @@ async function penLoverBoutiqueScrapePage(url) {
             function imgSrc(root) {
                 var img = root.querySelector('img');
                 if (!img) return '';
+                var srcset = (img.getAttribute('data-srcset') || img.getAttribute('srcset') || '').trim();
+                if (srcset) {
+                    var first = (srcset.split(',')[0] || '').trim();
+                    var url = first.split(' ')[0] || '';
+                    return url;
+                }
                 return (img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '').trim();
             }
 
@@ -1013,8 +1073,13 @@ async function penLoverBoutiqueScrapePage(url) {
                 var href = a.getAttribute('href') || '';
                 if (!href || seen[href]) return;
                 seen[href] = true;
-                var card = a.closest('li, article, .card, .product-item, .grid__item, .product') || a;
-                var title = (a.getAttribute('title') || (card && card.querySelector('h2, h3, .card__heading, .product-title'))?.textContent || a.textContent || '').replace(/\s+/g, ' ').trim();
+                var card = a.closest('li, article, .card, .product-item, .grid__item, .product, .card-wrapper') || a;
+                var title = (a.getAttribute('title') || textFrom(card || a, ['.full-unstyled-link', '.card__heading a', '.card__heading', '.card-information__text', '.product-title', 'h3', 'h2']));
+                if (!title) {
+                    var imgAlt = (card && card.querySelector('img')) ? (card.querySelector('img').getAttribute('alt') || '') : '';
+                    if (imgAlt) title = imgAlt.trim();
+                }
+                if (!title) title = (a.textContent || '').replace(/\s+/g, ' ').trim();
                 var price = getPrice(card || a);
                 var img = imgSrc(card || a);
                 items.push({ title: title, productUrl: abs(href), imageUrl: abs(img), price: price });
@@ -1168,10 +1233,11 @@ async function milanunciosScrapePage(url) {
     try {
         browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
         var page = await browser.newPage();
+        try { await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8' }); } catch (e) {}
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
-        await page.waitForTimeout(1500);
+        await new Promise(function (r) { setTimeout(r, 1500); });
         // cookie/consent banner handling
         try {
             await page.evaluate(function () {
@@ -1186,7 +1252,7 @@ async function milanunciosScrapePage(url) {
         // broader waiting condition
         try {
             await page.waitForFunction(function () {
-                return document.querySelectorAll('a[href*="/anuncios/"], article a[href], [class*="AdCard"] a[href]').length > 0;
+                return document.querySelectorAll('[class*="AdCard"], a[href*="/anuncios/"], article a[href]').length > 0;
             }, { timeout: 90000 });
         } catch (e) {
             console.warn('Milanuncios: primary wait timed out, proceeding with best-effort extraction');
@@ -1201,19 +1267,38 @@ async function milanunciosScrapePage(url) {
             }
             function priceFrom(el) {
                 var txt = (el.textContent || '').replace(/\s+/g, ' ');
+                // Try explicit selectors first
+                var sel = el.querySelector('[class*="price" i], [data-testid*="price" i]');
+                if (sel && sel.textContent) txt = sel.textContent.replace(/\s+/g, ' ');
                 var m = txt.match(/(€|EUR|£|GBP|\$|USD)\s?\d[\d.,]*/);
                 return m ? m[0] : '-';
             }
             var items = [];
-            var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="/anuncios/"], article a[href], [class*="AdCard"] a[href]'));
+            var cards = Array.prototype.slice.call(document.querySelectorAll('[class*="AdCard"], article, li'));
+            var anchors = [];
+            if (cards.length) {
+                cards.forEach(function (c) {
+                    var a = c.querySelector('a[href*="/anuncios/"]') || c.querySelector('a[href]');
+                    if (a) anchors.push(a);
+                });
+            } else {
+                anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="/anuncios/"], article a[href]'));
+            }
             var seen = {};
             anchors.forEach(function (a) {
                 var href = a.getAttribute('href') || '';
                 if (!href || seen[href]) return; seen[href] = true;
-                var card = a.closest('article, li, .aditem, .ma-AdCard-body, .ma-AdCard') || a;
-                var title = (a.getAttribute('title') || (card && card.querySelector('h2, h3, .ma-AdCard-title'))?.textContent || a.textContent || '').replace(/\s+/g, ' ').trim();
+                var card = a.closest('[class*="AdCard"], article, li, .aditem, .ma-AdCard-body, .ma-AdCard') || a;
+                var titleNode = (card && (card.querySelector('.ma-AdCard-title, [class*="AdCard-title"], h2, h3'))) || null;
+                var title = (a.getAttribute('title') || (titleNode && titleNode.textContent) || a.textContent || '').replace(/\s+/g, ' ').trim();
+                if (title && title.length <= 2) title = '';
                 var imgEl = (card && card.querySelector('img')) || a.querySelector('img');
-                var img = imgEl ? (imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '') : '';
+                var img = '';
+                if (imgEl) {
+                    var ss = (imgEl.getAttribute('srcset') || imgEl.getAttribute('data-srcset') || '').trim();
+                    if (ss) img = (ss.split(',')[0] || '').trim().split(' ')[0] || '';
+                    if (!img) img = (imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '');
+                }
                 var price = priceFrom(card || a);
                 items.push({ title: title, productUrl: abs(href), imageUrl: abs(img), price: price });
             });
@@ -1271,7 +1356,7 @@ async function main() {
         await vintageAndModernPensScrapePage('https://www.vintageandmodernpens.co.uk/?s=montblanc+149');
         await catawikiScrapePage('https://www.catawiki.com/en/s?q=%22montblanc%22+and+%22149%22&filters=966%255B%255D%3D87393%26l2_categories%255B%255D%3D1375');
         await milanunciosScrapePage('https://www.milanuncios.com/anuncios/?s=montblanc%20149&orden=relevance&fromSearch=1&fromSuggester=0&suggestionUsed=0&hitOrigin=home_search&recentSearchShowed=0&recentSearchUsed=0');
-        await saveProductsToFile(products, 'products_all.json');
+        // await saveProductsToFile(products, 'products_all.json');
         await saveAllProductsToMongo();
         console.log('All done.');
     } catch (err) {
