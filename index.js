@@ -830,7 +830,8 @@ async function dylanStephenScrapePage(url) {
         var page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
+        await page.waitForTimeout(1500);
 
         // Attempt to accept cookie banner if present
         try {
@@ -845,8 +846,16 @@ async function dylanStephenScrapePage(url) {
             });
         } catch (e) {}
 
-        // Wait for product grid
-        await page.waitForSelector('ul.products li.product, .products .product, .woocommerce ul.products', { timeout: 60000 });
+        // Wait for product grid (broad conditions)
+        try {
+            await page.waitForFunction(function () {
+                return document.querySelectorAll('ul.products li.product, .products .product, .woocommerce ul.products a[href*="/product/"]').length > 0
+                    || document.querySelectorAll('a[href*="/product/"] , h2.woocommerce-loop-product__title, .woocommerce-loop-product__title').length > 0
+                    || document.querySelectorAll('article, .post').length > 0;
+            }, { timeout: 90000 });
+        } catch (e) {
+            console.warn('Dylan Stephen: primary wait timed out, proceeding with best-effort extraction');
+        }
 
         // Scroll to bottom to load lazy assets
         async function autoScroll(p) {
@@ -888,10 +897,15 @@ async function dylanStephenScrapePage(url) {
 
             var items = [];
             var nodes = document.querySelectorAll('ul.products li.product, .products li.product, li.product');
+            if (!nodes || nodes.length === 0) {
+                // Fallback: search generic anchors if Woo selectors not present
+                nodes = document.querySelectorAll('article, .post, .entry, .content');
+            }
             nodes.forEach(function (node) {
                 var a = node.querySelector('a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link, a[href*="/product/"]') || node.querySelector('a[href]');
                 var productUrl = a ? abs(a.getAttribute('href') || '') : '';
                 var title = text(node, 'h2, .woocommerce-loop-product__title, .product-title, h3');
+                if (!title && a) title = (a.getAttribute('title') || a.textContent || '').trim();
                 var price = text(node, '.price, .woocommerce-Price-amount, .amount');
                 var img = imgSrc(node);
                 if (!productUrl && !title) return;
@@ -1156,8 +1170,27 @@ async function milanunciosScrapePage(url) {
         var page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
-        await page.waitForSelector('a[href*="/anuncios/"], article a[href]', { timeout: 60000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
+        await page.waitForTimeout(1500);
+        // cookie/consent banner handling
+        try {
+            await page.evaluate(function () {
+                var btns = Array.prototype.slice.call(document.querySelectorAll('button, a, [role="button"]'));
+                var accept = btns.find(function (b) {
+                    var t = ((b.innerText || b.textContent || '') + '').toLowerCase();
+                    return /aceptar|accept|agree|consent/.test(t);
+                });
+                if (accept) accept.click();
+            });
+        } catch (e) {}
+        // broader waiting condition
+        try {
+            await page.waitForFunction(function () {
+                return document.querySelectorAll('a[href*="/anuncios/"], article a[href], [class*="AdCard"] a[href]').length > 0;
+            }, { timeout: 90000 });
+        } catch (e) {
+            console.warn('Milanuncios: primary wait timed out, proceeding with best-effort extraction');
+        }
         var results = await page.evaluate(function () {
             function abs(u) {
                 if (!u) return '';
@@ -1172,7 +1205,7 @@ async function milanunciosScrapePage(url) {
                 return m ? m[0] : '-';
             }
             var items = [];
-            var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="/anuncios/"]'));
+            var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="/anuncios/"], article a[href], [class*="AdCard"] a[href]'));
             var seen = {};
             anchors.forEach(function (a) {
                 var href = a.getAttribute('href') || '';
@@ -1238,7 +1271,7 @@ async function main() {
         await vintageAndModernPensScrapePage('https://www.vintageandmodernpens.co.uk/?s=montblanc+149');
         await catawikiScrapePage('https://www.catawiki.com/en/s?q=%22montblanc%22+and+%22149%22&filters=966%255B%255D%3D87393%26l2_categories%255B%255D%3D1375');
         await milanunciosScrapePage('https://www.milanuncios.com/anuncios/?s=montblanc%20149&orden=relevance&fromSearch=1&fromSuggester=0&suggestionUsed=0&hitOrigin=home_search&recentSearchShowed=0&recentSearchUsed=0');
-        // await saveProductsToFile(products, 'products_all.json');
+        await saveProductsToFile(products, 'products_all.json');
         await saveAllProductsToMongo();
         console.log('All done.');
     } catch (err) {
@@ -1279,7 +1312,7 @@ app.get('/items', async function (req, res) {
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var baseAnd = [ { title: /montblanc/i }, { title: /149/i } ];
     if (titleFilter) baseAnd.push({ title: titleFilter });
-    var items = await collection.find({ $and: baseAnd }).toArray();
+    var items = await collection.find({ $and: baseAnd }).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
         id: String(item._id),
@@ -1318,7 +1351,7 @@ app.get('/items/today', async function (req, res) {
       ]
     };
     if (titleFilter) query.$and.push({ title: titleFilter });
-    var items = await collection.find(query).toArray();
+    var items = await collection.find(query).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
         id: String(item._id),
@@ -1357,7 +1390,7 @@ app.get('/items/last3days', async function (req, res) {
       ]
     };
     if (titleFilter) query.$and.push({ title: titleFilter });
-    var items = await collection.find(query).toArray();
+    var items = await collection.find(query).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
         id: String(item._id),
@@ -1391,7 +1424,7 @@ app.get('/items/saved', async function (req, res) {
       ]
     };
     if (titleFilter) query.$and.push({ title: titleFilter });
-    var items = await collection.find(query).toArray();
+    var items = await collection.find(query).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
         id: String(item._id),
