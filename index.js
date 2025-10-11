@@ -1135,14 +1135,55 @@ async function vintageAndModernPensScrapePage(url) {
                 var m = (txt || '').replace(/\s+/g, ' ').match(/(£|GBP|€|EUR|\$|USD)\s?\d[\d.,]*/i);
                 return m ? m[0] : '-';
             }
+            function slugToTitle(href) {
+                try {
+                    if (!href) return '';
+                    var path = href.split('?')[0].split('#')[0];
+                    var segs = path.split('/').filter(Boolean);
+                    var last = segs[segs.length - 1] || '';
+                    last = decodeURIComponent(last.replace(/[-_]+/g, ' ').trim());
+                    // Remove common words like 'shop', 'product', if present
+                    if (!last || last.length < 3) return '';
+                    return last;
+                } catch (e) { return ''; }
+            }
+            function titleFrom(post, a) {
+                var t = '';
+                var heading = post.querySelector('h1, h2, .entry-title, .post-title');
+                if (heading && heading.textContent) {
+                    t = heading.textContent.replace(/\s+/g, ' ').trim();
+                    if (t) return t;
+                }
+                if (a) {
+                    var at = (a.getAttribute('title') || a.getAttribute('aria-label') || '').trim();
+                    if (at) return at;
+                }
+                var img = post.querySelector('img');
+                if (img) {
+                    var alt = (img.getAttribute('alt') || '').trim();
+                    if (alt) return alt;
+                }
+                if (a) {
+                    var href = a.getAttribute('href') || '';
+                    var fromSlug = slugToTitle(href);
+                    if (fromSlug) return fromSlug;
+                }
+                return '';
+            }
             var items = [];
             var posts = Array.prototype.slice.call(document.querySelectorAll('article, .post'));
             posts.forEach(function (p) {
                 var a = p.querySelector('h2 a, h1 a, a[href]');
                 var href = a ? a.getAttribute('href') : '';
-                var title = a ? (a.textContent || '').trim() : '';
+                var title = titleFrom(p, a);
                 if (!href && !title) return;
-                var img = (p.querySelector('img') && (p.querySelector('img').getAttribute('src') || p.querySelector('img').getAttribute('data-src'))) || '';
+                var imgEl = p.querySelector('img');
+                var img = '';
+                if (imgEl) {
+                    var ss = (imgEl.getAttribute('srcset') || imgEl.getAttribute('data-srcset') || '').trim();
+                    if (ss) img = (ss.split(',')[0] || '').trim().split(' ')[0] || '';
+                    if (!img) img = (imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '');
+                }
                 var price = extractPrice(p.textContent || '');
                 items.push({ title: title, productUrl: abs(href), imageUrl: abs(img), price: price });
             });
@@ -1151,7 +1192,9 @@ async function vintageAndModernPensScrapePage(url) {
                 var anchors = Array.prototype.slice.call(document.querySelectorAll('h2 a[href]'));
                 anchors.forEach(function (a) {
                     var href = a.getAttribute('href') || '';
-                    var title = (a.textContent || '').trim();
+                    var title = (a.textContent || '').replace(/\s+/g, ' ').trim();
+                    if (!title) title = (a.getAttribute('title') || '').trim();
+                    if (!title) title = slugToTitle(href);
                     if (!href || !title) return;
                     items.push({ title: title, productUrl: abs(href), imageUrl: '', price: '-' });
                 });
