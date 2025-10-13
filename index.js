@@ -10,19 +10,19 @@ var fs = require('fs');
 
 var ebayScrapeConfig = {
     method: 'get',
-    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.ebay.co.uk%2Fsch%2Fi.html%3F_stpos%3DSK62QN%26_svsrch%3D1%26_nkw%3D%E2%80%9Cmontblanc%E2%80%9D%2Band%2B%E2%80%9C149%E2%80%9D%26LH_TitleDesc%3D1%26_sop%3D10%26LH_PrefLoc%3D2%26_fcid%3D3%26_folent%3D42101235225%26mkevt%3D1%26mkpid%3D0%26emsid%3De11021.m164379.l178259%26mkcid%3D7%26ch%3Dosgood%26euid%3D4467d5740f154c16996dc9a56fcd53bc%26bu%3D43600934330%26ut%3DRU%26exe%3D0%26ext%3D0%26osub%3D-1%7E1%26crd%3D20251008033812%26segname%3D11021&token=e65168739b7543deaba9693ad14d468ff6a220f3e39',
+    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.ebay.co.uk%2Fsch%2Fi.html%3F_stpos%3DSK62QN%26_svsrch%3D1%26_nkw%3D%E2%80%9Cmontblanc%E2%80%9D%2Band%2B%E2%80%9C149%E2%80%9D%26LH_TitleDesc%3D1%26_sop%3D10%26LH_PrefLoc%3D2%26_fcid%3D3%26_folent%3D42101235225%26mkpid%3D0%26emsid%3De11021.m164379.l178259%26mkcid%3D7%26ch%3Dosgood%26euid%3D4467d5740f154c16996dc9a56fcd53bc%26bu%3D43600934330%26ut%3DRU%26exe%3D0%26ext%3D0%26osub%3D-1%7E1%26crd%3D20251008033812%26segname%3D11021%26_ipg%3D240&token=b940fda662f8430f9e3d74e0c73491ac2d770959eea',
     headers: {
     },
 };
 var lotArtScrapeConfig = {
     method: 'get',
-    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.lot-art.com%2Fauction-search%3Fis_ss%3D1%26q%3DMontblanc+149+fountain+pen%26section%3D1%26slo%3D0%26cat%3D%26subcat%3D%26houses%3D%26houses_excl%3D0%26country%3D%26min_price%3D%26max_price%3D%26min_deal_pcnt%3Dnull%26max_deal_pcnt%3Dnull%26currency%3D%26item_type%3D0%26min_create_time%3D0%26order%3Drecent%26context_subcat_only%3D%26context_label3%3D%26context_is_attributed%3D%26context_is_copy%3D%26page%3D1%26res_per_page%3D20%26subq%3D%26context_name_brand%3D%26context_name_brand_birth_death%3D&token=7a4abb5875394052a408c0d3aa07937e8f75f796a2c&output=raw',
+    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.lot-art.com%2Fauction-search%3Fis_ss%3D1%26q%3D%22montblanc%22+and+%22149%22%26section%3D1%26slo%3D0%26cat%3D%26subcat%3D%26houses%3D%26houses_excl%3D0%26country%3D%26min_price%3D%26max_price%3D%26min_deal_pcnt%3Dnull%26max_deal_pcnt%3Dnull%26currency%3D%26item_type%3D0%26min_create_time%3D0%26order%3Drecent%26context_subcat_only%3D%26context_label3%3D%26context_is_attributed%3D%26context_is_copy%3D%26page%3D1%26res_per_page%3D20%26subq%3D%26context_name_brand%3D%26context_name_brand_birth_death%3D&token=b940fda662f8430f9e3d74e0c73491ac2d770959eea',
     headers: {
     },
 };
 var carousellScrapeConfig = {
     method: 'get',
-    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.carousell.sg%2Fsearch%2Fmontblanc+149%3FaddRecent%3Dtrue%26brand_enum%3DBRAND_MONT_BLANC%26canChangeKeyword%3Dtrue%26includeSuggestions%3Dtrue%26sort_by%3D3%26t-search_query_source%3Ddirect_search&token=e65168739b7543deaba9693ad14d468ff6a220f3e39&super=true&geoCode=SG',
+    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.carousell.sg%2Fsearch%2F%22montblanc%22+and+%22149%22%3FaddRecent%3Dtrue%26brand_enum%3DBRAND_MONT_BLANC%26canChangeKeyword%3Dtrue%26includeSuggestions%3Dtrue%26sort_by%3D3%26t-search_query_source%3Ddirect_search&token=b940fda662f8430f9e3d74e0c73491ac2d770959eea&super=true&geoCode=SG',
     headers: {
     },
 };
@@ -77,7 +77,7 @@ async function saveProductsToMongo(products) {
           await collection.updateOne({ _id: exsting1._id }, { $set: doc });
           summary.updated += 1;
         } else if (existing && existing.from === 'ebay') {
-          await collection.updateOne({ _id: exsting._id }, { $set: doc });
+          await collection.updateOne({ _id: existing._id }, { $set: doc });
           summary.updated += 1;
         } else {
           doc.createdAt = new Date();
@@ -1446,9 +1446,9 @@ async function main() {
         products = [];
         await ebayScrape();
         await lotArtScrape();
+        await carousellScrape();
         await invaluableScrapePage('https://www.invaluable.com/search?upcoming=false&query=montblanc%2520149%2520fountain%2520pen&keyword=montblanc%2520149%2520fountain%2520pen');
         await salesroomScrapePage('https://www.the-saleroom.com/en-gb/search-results?searchterm=montblanc%20fountain%20pen&sortterm=publishedDate');
-        await carousellScrape();
         await dylanStephenScrapePage('https://www.dylanstephenpens.co.uk/?s=%22montblanc%22+and+%22149%22');
         await penLoverBoutiqueScrapePage('https://penloverboutique.com/search?type=product&options%5Bprefix%5D=last&q=%22montblanc%22+and+%22149%22');
         await vintageAndModernPensScrapePage('https://www.vintageandmodernpens.co.uk/?s=montblanc+149');
