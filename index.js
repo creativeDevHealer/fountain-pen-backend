@@ -30,6 +30,7 @@ var carousellScrapeConfig = {
 var MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/';
 var DB_NAME = process.env.DB_NAME || 'products_db';
 var COLLECTION_NAME = process.env.COLLECTION_NAME || 'products';
+var TODAY_COLLECTION_NAME = process.env.TODAY_COLLECTION_NAME || 'todayproducts';
 
 async function saveProductsToMongo(products) {
   if (!Array.isArray(products) || products.length === 0) {
@@ -96,6 +97,45 @@ async function saveProductsToMongo(products) {
   }
 }
 var products = [];
+
+async function saveProductsToTodayCollection(products) {
+  if (!Array.isArray(products)) products = [];
+  var client = new MongoClient(MONGO_URI);
+  try {
+    await client.connect();
+    var db = client.db(DB_NAME);
+    var collection = db.collection(TODAY_COLLECTION_NAME);
+    try {
+      await collection.deleteMany({});
+    } catch (e) {
+      console.warn('todayproducts: deleteMany failed (continuing):', e && (e.message || e));
+    }
+    if (products.length === 0) {
+      console.log('todayproducts: no products to insert');
+      return;
+    }
+    var now = new Date();
+    var docs = products.map(function (p) {
+      return {
+        title: (p.title || '').trim(),
+        link: (p.productUrl || '').trim(),
+        price: (p.price || '').trim(),
+        image: (p.imageUrl || '').trim(),
+        from: (p.from || '').trim(),
+        like: false,
+        viewed: false,
+        createdAt: now,
+        updatedAt: now
+      };
+    });
+    var res = await collection.insertMany(docs, { ordered: false });
+    console.log('todayproducts: inserted', (res && res.insertedCount) || docs.length, 'docs');
+  } catch (err) {
+    console.error('todayproducts save error:', err);
+  } finally {
+    try { await client.close(); } catch (e) {}
+  }
+}
 
 async function ebayScrape() {
     return axios(ebayScrapeConfig)
@@ -1414,6 +1454,8 @@ async function main() {
         await vintageAndModernPensScrapePage('https://www.vintageandmodernpens.co.uk/?s=montblanc+149');
         await catawikiScrapePage('https://www.catawiki.com/en/s?q=%22montblanc%22+and+%22149%22&filters=966%255B%255D%3D87393%26l2_categories%255B%255D%3D1375');
         await milanunciosScrapePage('https://www.milanuncios.com/anuncios/?s=montblanc%20149&orden=relevance&fromSearch=1&fromSuggester=0&suggestionUsed=0&hitOrigin=home_search&recentSearchShowed=0&recentSearchUsed=0');
+        // Write a snapshot of this run to the todayproducts collection (no indexes)
+        await saveProductsToTodayCollection(products);
         // await saveProductsToFile(products, 'products_all.json');
         await saveAllProductsToMongo();
         console.log('All done.');
@@ -1447,6 +1489,15 @@ async function getCollectionHandle() {
   return db.collection(COLLECTION_NAME);
 }
 
+async function getTodayCollectionHandle() {
+  if (!sharedMongoClient) {
+    sharedMongoClient = new MongoClient(MONGO_URI);
+    await sharedMongoClient.connect();
+  }
+  var db = sharedMongoClient.db(DB_NAME);
+  return db.collection(TODAY_COLLECTION_NAME);
+}
+
 // GET /items → list of items { id, name, price, image, url, saved }
 app.get('/items', async function (req, res) {
   try {
@@ -1476,25 +1527,15 @@ app.get('/items', async function (req, res) {
 });
 
 
-// GET /items/today → items created today
+// GET /items/today → items from todayproducts collection
 app.get('/items/today', async function (req, res) {
   try {
-    var collection = await getCollectionHandle();
+    var collection = await getTodayCollectionHandle();
     var q = (req.query.q || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
-    var start = new Date();
-    start.setHours(0, 0, 0, 0);
-    var end = new Date();
-    end.setHours(23, 59, 59, 999);
-    var query = {
-      $and: [
-        { title: /montblanc/i },
-        { title: /149/i },
-        { createdAt: { $gte: start, $lte: end } }
-      ]
-    };
-    if (titleFilter) query.$and.push({ title: titleFilter });
-    var items = await collection.find(query).sort({ createdAt: -1 }).toArray();
+    var baseAnd = [ { title: /montblanc/i }, { title: /149/i } ];
+    if (titleFilter) baseAnd.push({ title: titleFilter });
+    var items = await collection.find({ $and: baseAnd }).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
         id: String(item._id),
@@ -1591,26 +1632,22 @@ app.get('/items/saved', async function (req, res) {
 app.get('/items/stats', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
+    var todayCollection = await getTodayCollectionHandle();
     var q = (req.query.q || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
-    var todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    var todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
     var last3Start = new Date();
-    last3Start.setDate(todayEnd.getDate() - 3);
+    last3Start.setDate(last3Start.getDate() - 3);
     last3Start.setHours(0, 0, 0, 0);
 
     var baseFilter = { $and: [ { title: /montblanc/i }, { title: /149/i } ] };
     if (titleFilter) baseFilter.$and.push({ title: titleFilter });
-    function withDateRange(filter, start, end) {
-      return { $and: [ baseFilter, { createdAt: { $gte: start, $lte: end } } ] };
-    }
+
+    var now = new Date();
+    var last3Filter = { $and: [ baseFilter, { createdAt: { $gte: last3Start, $lte: now } } ] };
 
     var [todayCount, last3DaysCount, savedCount] = await Promise.all([
-      collection.countDocuments(withDateRange(baseFilter, todayStart, todayEnd)),
-      collection.countDocuments(withDateRange(baseFilter, last3Start, todayEnd)),
+      todayCollection.countDocuments(baseFilter),
+      collection.countDocuments(last3Filter),
       collection.countDocuments({ $and: [ baseFilter, { like: true } ] })
     ]);
 
