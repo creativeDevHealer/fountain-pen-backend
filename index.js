@@ -1535,7 +1535,7 @@ app.get('/items/today', async function (req, res) {
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var baseAnd = [ { title: /montblanc/i }, { title: /149/i } ];
     if (titleFilter) baseAnd.push({ title: titleFilter });
-    var items = await collection.find({ $and: baseAnd }).sort({ createdAt: -1 }).toArray();
+    var items = await collection.find({ $and: baseAnd }).sort({ _id: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
         id: String(item._id),
