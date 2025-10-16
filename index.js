@@ -1498,14 +1498,150 @@ async function getTodayCollectionHandle() {
   return db.collection(TODAY_COLLECTION_NAME);
 }
 
+// --- Simple credential auth (single admin) ---
+var JWT_SECRET = process.env.JWT_SECRET || 'change-me-dev-secret';
+function base64UrlEncode(str) {
+  return Buffer.from(str).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+function signJwt(payload, secret, expiresInSeconds) {
+  var header = { alg: 'HS256', typ: 'JWT' };
+  var nowSec = Math.floor(Date.now() / 1000);
+  var body = Object.assign({}, payload, { iat: nowSec, exp: nowSec + (expiresInSeconds || 60 * 60 * 8) });
+  var h = base64UrlEncode(JSON.stringify(header));
+  var b = base64UrlEncode(JSON.stringify(body));
+  var crypto = require('crypto');
+  var sig = crypto
+    .createHmac('sha256', secret)
+    .update(h + '.' + b)
+    .digest('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+  return h + '.' + b + '.' + sig;
+}
+function verifyJwt(token, secret) {
+  try {
+    var parts = (token || '').split('.');
+    if (parts.length !== 3) return null;
+    var crypto = require('crypto');
+    var expected = crypto
+      .createHmac('sha256', secret)
+      .update(parts[0] + '.' + parts[1])
+      .digest('base64')
+      .replace(/=/g, '')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+    if (expected !== parts[2]) return null;
+    var payloadJson = Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    var payload = JSON.parse(payloadJson);
+    var nowSec = Math.floor(Date.now() / 1000);
+    if (payload.exp && nowSec > payload.exp) return null;
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function getCredentialCollection() {
+  if (!sharedMongoClient) {
+    sharedMongoClient = new MongoClient(MONGO_URI);
+    await sharedMongoClient.connect();
+  }
+  // Use main DB_NAME so credentials live alongside app data (matches your screenshot)
+  var db = sharedMongoClient.db(DB_NAME);
+  return db.collection('credential');
+}
+
+async function readSingleCredential() {
+  var coll = await getCredentialCollection();
+  var doc = await coll.findOne({});
+  if (!doc) {
+    try {
+      var now = new Date();
+      await coll.insertOne({ username: 'admin', password: 'admin123!@#', createdAt: now, updatedAt: now });
+      doc = await coll.findOne({});
+    } catch (e) {
+      // if insert races with another startup, just read again
+      try { doc = await coll.findOne({}); } catch (_e) {}
+    }
+  }
+  return doc || null;
+}
+
+function authMiddleware(req, res, next) {
+  try {
+    var auth = req.headers['authorization'] || '';
+    var token = '';
+    if (auth.toLowerCase().startsWith('bearer ')) token = auth.slice(7).trim();
+    if (!token) return res.status(401).json({ detail: 'Missing token' });
+    var payload = verifyJwt(token, JWT_SECRET);
+    if (!payload) return res.status(401).json({ detail: 'Invalid token' });
+    req.user = payload;
+    next();
+  } catch (e) {
+    return res.status(401).json({ detail: 'Unauthorized' });
+  }
+}
+
+// POST /auth/login { username, password }
+app.post('/auth/login', async function (req, res) {
+  try {
+    var body = req.body || {};
+    var username = (body.username || '').toString();
+    var password = (body.password || '').toString();
+    if (!username || !password) {
+      return res.status(400).json({ detail: 'username and password required' });
+    }
+    var cred = await readSingleCredential();
+    if (!cred || (cred.username !== username || cred.password !== password)) {
+      return res.status(401).json({ detail: 'Invalid credentials' });
+    }
+    var token = signJwt({ sub: 'admin', username: username }, JWT_SECRET, 60 * 60 * 12);
+    res.json({ token: token, username: username, expiresIn: 60 * 60 * 12 });
+  } catch (err) {
+    console.error('POST /auth/login error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// POST /auth/change { newUsername?, newPassword? } requires Authorization: Bearer <token>
+app.post('/auth/change', authMiddleware, async function (req, res) {
+  try {
+    var body = req.body || {};
+    var newUsername = (body.newUsername || '').toString();
+    var newPassword = (body.newPassword || '').toString();
+    if (!newUsername && !newPassword) {
+      return res.status(400).json({ detail: 'newUsername or newPassword required' });
+    }
+    var coll = await getCredentialCollection();
+    var current = await readSingleCredential();
+    if (!current) {
+      return res.status(404).json({ detail: 'Credential not found' });
+    }
+    var update = {};
+    if (newUsername) update.username = newUsername;
+    if (newPassword) update.password = newPassword;
+    await coll.updateOne({ _id: current._id }, { $set: update });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /auth/change error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 // GET /items → list of items { id, name, price, image, url, saved }
 app.get('/items', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
     var q = (req.query.q || '').toString().trim();
+    var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var baseAnd = [ { title: /montblanc/i }, { title: /149/i } ];
     if (titleFilter) baseAnd.push({ title: titleFilter });
+    if (site) {
+      var siteFilter = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+      baseAnd.push({ from: siteFilter });
+    }
     var items = await collection.find({ $and: baseAnd }).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
@@ -1532,9 +1668,14 @@ app.get('/items/today', async function (req, res) {
   try {
     var collection = await getTodayCollectionHandle();
     var q = (req.query.q || '').toString().trim();
+    var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var baseAnd = [ { title: /montblanc/i }, { title: /149/i } ];
     if (titleFilter) baseAnd.push({ title: titleFilter });
+    if (site) {
+      var siteFilter = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+      baseAnd.push({ from: siteFilter });
+    }
     var items = await collection.find({ $and: baseAnd }).sort({ _id: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
@@ -1560,6 +1701,7 @@ app.get('/items/last3days', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
     var q = (req.query.q || '').toString().trim();
+    var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var end = new Date();
     end.setHours(23, 59, 59, 999);
@@ -1574,6 +1716,10 @@ app.get('/items/last3days', async function (req, res) {
       ]
     };
     if (titleFilter) query.$and.push({ title: titleFilter });
+    if (site) {
+      var siteFilter3 = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+      query.$and.push({ from: siteFilter3 });
+    }
     var items = await collection.find(query).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
@@ -1599,6 +1745,7 @@ app.get('/items/saved', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
     var q = (req.query.q || '').toString().trim();
+    var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var query = {
       $and: [
@@ -1608,6 +1755,10 @@ app.get('/items/saved', async function (req, res) {
       ]
     };
     if (titleFilter) query.$and.push({ title: titleFilter });
+    if (site) {
+      var siteFilter4 = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+      query.$and.push({ from: siteFilter4 });
+    }
     var items = await collection.find(query).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
@@ -1634,6 +1785,7 @@ app.get('/items/stats', async function (req, res) {
     var collection = await getCollectionHandle();
     var todayCollection = await getTodayCollectionHandle();
     var q = (req.query.q || '').toString().trim();
+    var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
     var last3Start = new Date();
     last3Start.setDate(last3Start.getDate() - 3);
@@ -1641,6 +1793,10 @@ app.get('/items/stats', async function (req, res) {
 
     var baseFilter = { $and: [ { title: /montblanc/i }, { title: /149/i } ] };
     if (titleFilter) baseFilter.$and.push({ title: titleFilter });
+    if (site) {
+      var siteFilterStats = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+      baseFilter.$and.push({ from: siteFilterStats });
+    }
 
     var now = new Date();
     var last3Filter = { $and: [ baseFilter, { createdAt: { $gte: last3Start, $lte: now } } ] };
@@ -1711,35 +1867,35 @@ function startServer() {
 }
 
 // Run initial scrape pipeline before starting the server
-(function bootstrap() {
-  console.log('Bootstrap: starting initial scrape...');
-  Promise.resolve()
-    .then(function () { return main(); })
-    .then(function () {
-      console.log('Bootstrap: initial scrape completed.');
-    })
-    .catch(function (e) {
-      console.error('Bootstrap: initial scrape failed:', e);
-    })
-    .finally(function () {
-      startServer();
-    });
-})();
+// (function bootstrap() {
+//   console.log('Bootstrap: starting initial scrape...');
+//   Promise.resolve()
+//     .then(function () { return main(); })
+//     .then(function () {
+//       console.log('Bootstrap: initial scrape completed.');
+//     })
+//     .catch(function (e) {
+//       console.error('Bootstrap: initial scrape failed:', e);
+//     })
+//     .finally(function () {
+//       startServer();
+//     });
+// })();
 
 app.get('/', (req, res) => {
   res.send('Hello World');
 });
-// startServer();
+startServer();
 // --- Schedule daily scrape at 00:00 (system local time) ---
 var isScheduledRunInProgress = false;
-// Run scrape every 6 hours at minute 0
-cron.schedule('0 */6 * * *', async function () {
+// Run scrape at 00:00, 06:00, 12:00, 18:00 (CET/CEST)
+cron.schedule('0 0,6,12,18 * * *', async function () {
   if (isScheduledRunInProgress) {
     console.log('Cron: previous run still in progress; skipping this cycle.');
     return;
   }
   isScheduledRunInProgress = true;
-  console.log('Cron: starting scheduled scrape at', new Date().toString());
+  console.log('Cron: starting scheduled scrape at', new Date().toString(), '(tz: Europe/Berlin)');
   try {
     await main();
   } catch (e) {
@@ -1748,5 +1904,5 @@ cron.schedule('0 */6 * * *', async function () {
     isScheduledRunInProgress = false;
     console.log('Cron: scheduled scrape finished at', new Date().toString());
   }
-}, { scheduled: true });
+}, { scheduled: true, timezone: 'Europe/Berlin' });
 
