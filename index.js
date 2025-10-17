@@ -393,7 +393,7 @@ async function invaluableScrapePage(url) {
         var page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 120000 });
 
         // Wait for the results container to appear
         await page.waitForSelector('.algolia .hit-wrapper, .search-holder .hit-wrapper, [data-ais-widget="hits"]', { timeout: 60000 });
@@ -883,11 +883,30 @@ async function dylanStephenScrapePage(url) {
     }
     var browser;
     try {
-        browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+        browser = await puppeteer.launch({ headless: 'new', args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage', // fix small /dev/shm on many EC2 AMIs
+            '--disable-gpu',
+            '--no-zygote'
+        ] });
         var page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
+        try { await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-GB,en;q=0.9' }); } catch (e) {}
+        try {
+            await page.setRequestInterception(true);
+            page.on('request', function (req) {
+                var type = req.resourceType();
+                var urlStr = req.url();
+                // Block heavy third-party assets that can keep network busy forever
+                if (type === 'media' || type === 'font') return req.abort();
+                if (/google-analytics|gtm|doubleclick|facebook|hotjar|segment|optimizely|kaplay|snowplow/i.test(urlStr)) return req.abort();
+                return req.continue();
+            });
+        } catch (e) {}
+        page.setDefaultNavigationTimeout(120000);
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
         await new Promise(function (r) { setTimeout(r, 1500); });
 
         // Attempt to accept cookie banner if present
@@ -1608,6 +1627,7 @@ async function main() {
     }
 }
 // main();
+cultPensScrapePage('https://cultpens.com/pages/search-results?options%5Bprefix%5D=last&q=%22montblanc%22+and+%22149%22&productListPgNo=1');
 
 // --- Simple API server (Express) ---
 var app = express();
@@ -2011,20 +2031,22 @@ function startServer() {
 }
 
 // Run initial scrape pipeline before starting the server
-(function bootstrap() {
-  console.log('Bootstrap: starting initial scrape...');
-  Promise.resolve()
-    .then(function () { return main(); })
-    .then(function () {
-      console.log('Bootstrap: initial scrape completed.');
-    })
-    .catch(function (e) {
-      console.error('Bootstrap: initial scrape failed:', e);
-    })
-    .finally(function () {
-      startServer();
-    });
-})();
+// (function bootstrap() {
+//   console.log('Bootstrap: starting initial scrape...');
+//   Promise.resolve()
+//     .then(function () { return main(); })
+//     .then(function () {
+//       console.log('Bootstrap: initial scrape completed.');
+//     })
+//     .catch(function (e) {
+//       console.error('Bootstrap: initial scrape failed:', e);
+//     })
+//     .finally(function () {
+//       startServer();
+//     });
+// })();
+
+
 
 app.get('/', (req, res) => {
   res.send('Hello World');
