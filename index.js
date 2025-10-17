@@ -393,7 +393,7 @@ async function invaluableScrapePage(url) {
         var page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 120000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
 
         // Wait for the results container to appear
         await page.waitForSelector('.algolia .hit-wrapper, .search-holder .hit-wrapper, [data-ais-widget="hits"]', { timeout: 60000 });
@@ -1333,7 +1333,7 @@ async function cultPensScrapePage(url) {
         var page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 120000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
         // Allow dynamic product grid to render
         try {
             await page.waitForSelector('a[href*="/products/"]', { timeout: 45000 });
