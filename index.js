@@ -906,7 +906,19 @@ async function dylanStephenScrapePage(url) {
             });
         } catch (e) {}
         page.setDefaultNavigationTimeout(120000);
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+        // Some hosts keep long-lived connections causing nav timeouts on cloud
+        // Use timeout:0 and rely on explicit waits below
+        var maxAttempts = 2;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 0 });
+                break;
+            } catch (navErr) {
+                if (attempt === maxAttempts) throw navErr;
+                try { await page.waitForTimeout(1500); } catch (e) {}
+                try { await page.goto('about:blank'); } catch (e) {}
+            }
+        }
         await new Promise(function (r) { setTimeout(r, 1500); });
 
         // Attempt to accept cookie banner if present
@@ -1352,7 +1364,7 @@ async function cultPensScrapePage(url) {
         var page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 120000 });
         // Allow dynamic product grid to render
         try {
             await page.waitForSelector('a[href*="/products/"]', { timeout: 45000 });
@@ -1597,7 +1609,7 @@ function saveProductsToFile(list, filePath) {
         from: (p.from || '').toString()
       };
     });
-    // fs.writeFileSync(path, JSON.stringify(minimal, null, 2), 'utf8');
+    fs.writeFileSync(path, JSON.stringify(minimal, null, 2), 'utf8');
     console.log('Saved ' + minimal.length + ' product(s) to file ' + path);
   } catch (e) {
     console.error('Failed to save products file:', e);
