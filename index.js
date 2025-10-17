@@ -1318,6 +1318,149 @@ async function catawikiScrapePage(url) {
     }
 }
 
+// Scrape Cult Pens search results
+async function cultPensScrapePage(url) {
+    console.log('Cult Pens scraping (Puppeteer) started');
+    if (!puppeteer) {
+        try { puppeteer = require('puppeteer'); } catch (e) {
+            console.error('Puppeteer not installed. Run npm install puppeteer');
+            return;
+        }
+    }
+    var browser;
+    try {
+        browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+        var page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1366, height: 900 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 120000 });
+        // Allow dynamic product grid to render
+        try {
+            await page.waitForSelector('a[href*="/products/"]', { timeout: 45000 });
+        } catch (e) {
+            try {
+                await page.waitForFunction(function(){
+                    return document.querySelectorAll('[data-product-id], [class*="productgrid" i], [class*="product-card" i], article[class*="product" i], li[class*="product" i]').length > 0;
+                }, { timeout: 45000 });
+            } catch (_e) {}
+        }
+
+        // Scroll to load images/lazy content
+        async function autoScroll(p) {
+            await p.evaluate(async function () {
+                await new Promise(function (resolve) {
+                    var total = 0; var step = 600;
+                    var t = setInterval(function () {
+                        var sh = document.body.scrollHeight;
+                        window.scrollBy(0, step);
+                        total += step;
+                        if (total >= sh - window.innerHeight - 100) { clearInterval(t); resolve(); }
+                    }, 200);
+                });
+            });
+        }
+        await autoScroll(page);
+
+        var results = await page.evaluate(function () {
+            function abs(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u.split('?')[0];
+                if (u.indexOf('//') === 0) return 'https:' + u.split('?')[0];
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return window.location.origin + u.split('?')[0];
+            }
+            function slugToTitle(href) {
+                try {
+                    if (!href) return '';
+                    var path = href.split('?')[0].split('#')[0];
+                    var segs = path.split('/').filter(Boolean);
+                    var idx = segs.lastIndexOf('products');
+                    var last = idx >= 0 && segs[idx + 1] ? segs[idx + 1] : segs[segs.length - 1] || '';
+                    last = decodeURIComponent(last.replace(/[-_]+/g, ' ').trim());
+                    if (last) return last;
+                    return '';
+                } catch (e) { return ''; }
+            }
+            function getPrice(root) {
+                var selectors = [
+                    '.price__sale .price-item--sale',
+                    '.price-item--regular',
+                    '.price__regular .price-item',
+                    '.price',
+                    '.money',
+                    '[class*="price" i]'
+                ];
+                for (var i = 0; i < selectors.length; i++) {
+                    var n = root.querySelector(selectors[i]);
+                    if (n && n.textContent) {
+                        var t = n.textContent.replace(/\s+/g, ' ').trim();
+                        var m = t.match(/(From\s*)?(£|GBP|€|EUR|\$|USD)\s?\d[\d.,]*/i);
+                        if (m) return (m[1] ? 'From ' : '') + m[2] + ' ' + m[0].replace(/^(From\s*)?(£|GBP|€|EUR|\$|USD)\s?/, '');
+                        return t;
+                    }
+                }
+                var txt = (root.textContent || '').replace(/\s+/g, ' ').trim();
+                var m2 = txt.match(/(From\s*)?(£|GBP|€|EUR|\$|USD)\s?\d[\d.,]*/i);
+                return m2 ? m2[0] : '-';
+            }
+            function findImg(card) {
+                var img = card.querySelector('img');
+                if (!img) return '';
+                var ss = (img.getAttribute('srcset') || img.getAttribute('data-srcset') || '').trim();
+                if (ss) { return ss.split(',').pop().trim().split(' ')[0]; }
+                return img.getAttribute('data-src') || img.getAttribute('src') || '';
+            }
+            var items = [];
+            // Prefer product cards first
+            var cards = Array.prototype.slice.call(document.querySelectorAll('[data-product-id], [class*="productgrid--item" i], [class*="product-card" i], article[class*="product" i], li[class*="product" i]'));
+            var seen = {};
+            function addFromCard(card){
+                var a = card.querySelector('a[href*="/products/"]') || card.querySelector('a[href]');
+                var href = a ? (a.getAttribute('href') || '') : '';
+                if (!href) return;
+                var key = href.split('?')[0];
+                if (seen[key]) return; seen[key] = true;
+                var title = (a.getAttribute('title') || '').trim();
+                if (!title) {
+                    var tNode = card.querySelector('[data-product-title], .ProductCard__Title, .product-title, .card__heading, .card__heading a, .card-information__text, .full-unstyled-link, h3, h2, [class*="title" i]');
+                    if (tNode && tNode.textContent) title = tNode.textContent.replace(/\s+/g, ' ').trim();
+                }
+                if (!title) title = (a.textContent || '').replace(/\s+/g, ' ').trim();
+                if (!title) title = slugToTitle(href);
+                var price = getPrice(card);
+                var img = findImg(card);
+                items.push({ title: title || '', productUrl: abs(href), imageUrl: abs(img), price: price || '-' });
+            }
+            cards.forEach(addFromCard);
+            // Fallback to anchors
+            if (items.length === 0) {
+                var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="/products/"]'));
+                anchors.forEach(function(a){
+                    var fakeCard = a.closest('li, article, div') || document.body;
+                    addFromCard(fakeCard);
+                });
+            }
+            return items;
+        });
+
+        var cultpensItems = (results || []).map(function (p) {
+            return { title: p.title || '', productUrl: p.productUrl || '', imageUrl: p.imageUrl || '', price: p.price || '-', detail: '', from: 'cultpens' };
+        });
+        cultpensItems.forEach(function (p) { products.push(p); });
+        try {
+            var ts = new Date();
+            function pad(n){ return n < 10 ? ('0' + n) : n; }
+            var filename = 'cultpens_' + ts.getFullYear() + pad(ts.getMonth()+1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes()) + pad(ts.getSeconds()) + '.json';
+            saveProductsToFile(cultpensItems, filename);
+        } catch (e) { console.warn('Cult Pens: failed to write file snapshot:', e && (e.message || e)); }
+        console.log('Cult Pens extracted ' + ((results && results.length) || 0) + ' product(s).');
+    } catch (err) {
+        console.error('Cult Pens Puppeteer error:', err && (err.message || err));
+    } finally {
+        if (browser) { try { await browser.close(); } catch (e) {} }
+    }
+}
+
 // Scrape Milanuncios search results
 async function milanunciosScrapePage(url) {
     console.log('Milanuncios scraping (Puppeteer) started');
@@ -1435,7 +1578,7 @@ function saveProductsToFile(list, filePath) {
         from: (p.from || '').toString()
       };
     });
-    fs.writeFileSync(path, JSON.stringify(minimal, null, 2), 'utf8');
+    // fs.writeFileSync(path, JSON.stringify(minimal, null, 2), 'utf8');
     console.log('Saved ' + minimal.length + ' product(s) to file ' + path);
   } catch (e) {
     console.error('Failed to save products file:', e);
@@ -1454,6 +1597,7 @@ async function main() {
         await vintageAndModernPensScrapePage('https://www.vintageandmodernpens.co.uk/?s=montblanc+149');
         await catawikiScrapePage('https://www.catawiki.com/en/s?q=%22montblanc%22+and+%22149%22&filters=966%255B%255D%3D87393%26l2_categories%255B%255D%3D1375');
         await milanunciosScrapePage('https://www.milanuncios.com/anuncios/?s=montblanc%20149&orden=relevance&fromSearch=1&fromSuggester=0&suggestionUsed=0&hitOrigin=home_search&recentSearchShowed=0&recentSearchUsed=0');
+        await cultPensScrapePage('https://cultpens.com/pages/search-results?options%5Bprefix%5D=last&q=%22montblanc%22+and+%22149%22&productListPgNo=1');
         // Write a snapshot of this run to the todayproducts collection (no indexes)
         await saveProductsToTodayCollection(products);
         // await saveProductsToFile(products, 'products_all.json');
@@ -1867,25 +2011,25 @@ function startServer() {
 }
 
 // Run initial scrape pipeline before starting the server
-// (function bootstrap() {
-//   console.log('Bootstrap: starting initial scrape...');
-//   Promise.resolve()
-//     .then(function () { return main(); })
-//     .then(function () {
-//       console.log('Bootstrap: initial scrape completed.');
-//     })
-//     .catch(function (e) {
-//       console.error('Bootstrap: initial scrape failed:', e);
-//     })
-//     .finally(function () {
-//       startServer();
-//     });
-// })();
+(function bootstrap() {
+  console.log('Bootstrap: starting initial scrape...');
+  Promise.resolve()
+    .then(function () { return main(); })
+    .then(function () {
+      console.log('Bootstrap: initial scrape completed.');
+    })
+    .catch(function (e) {
+      console.error('Bootstrap: initial scrape failed:', e);
+    })
+    .finally(function () {
+      startServer();
+    });
+})();
 
 app.get('/', (req, res) => {
   res.send('Hello World');
 });
-startServer();
+// startServer();
 // --- Schedule daily scrape at 00:00 (system local time) ---
 var isScheduledRunInProgress = false;
 // Run scrape at 00:00, 06:00, 12:00, 18:00 (CET/CEST)
