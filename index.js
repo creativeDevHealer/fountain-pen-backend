@@ -1,3 +1,167 @@
+// Scrape IZODS (Shopify) search results
+async function izodsScrape(url) {
+    console.log('IZODS scraping started');
+    try {
+        var resp = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-GB,en;q=0.9' }, timeout: 120000 });
+        var html = typeof resp.data === 'string' ? resp.data : '';
+        if (!html) return;
+        var $ = cheerio.load(html);
+        function abs(u) {
+            if (!u) return '';
+            if (/^https?:\/\//i.test(u)) return u.split('?')[0];
+            if (u.indexOf('//') === 0) return 'https:' + u.split('?')[0];
+            if (u.charAt(0) !== '/') u = '/' + u;
+            return 'https://izods.ink' + u.split('?')[0];
+        }
+        var items = [];
+        var seen = {};
+        // Iterate product tiles in the main grid only
+        $('#product-grid .grid__item').each(function(){
+            var tile = $(this);
+            var a = tile.find('a[href*="/products/"]').first();
+            var hrefRaw = a.attr('href') || '';
+            if (!hrefRaw) return;
+            var m = hrefRaw.match(/\/products\/([^\/?#]+)/i);
+            if (!m || !m[1]) return;
+            var handle = (m[1] || '').toLowerCase();
+            if (seen[handle]) return; seen[handle] = true;
+            var href = abs(hrefRaw);
+
+            var title = (tile.find('.card__heading a, .card__heading, a[href*="/products/"]').first().text() || a.attr('title') || a.attr('aria-label') || '').replace(/\s+/g, ' ').trim();
+            var price = (tile.find('.price-item--sale, .price-item--regular, .price-item, .price').first().text() || '').replace(/\s+/g, ' ').trim();
+            if (!price) {
+                var mm = (tile.text() || '').replace(/\s+/g, ' ').match(/(£|GBP|€|EUR|\$|USD)\s?\d[\d.,]*/);
+                price = mm ? mm[0] : '-';
+            }
+
+            // Image: prefer picture > source[srcset] or img[srcset]/img[src]
+            var img = '';
+            var pic = tile.find('picture');
+            if (pic.length) {
+                var srcset = (pic.find('source[srcset]').last().attr('srcset') || pic.find('img').attr('srcset') || '').trim();
+                if (srcset) {
+                    // pick last URL (largest)
+                    var parts = srcset.split(',');
+                    var best = parts[parts.length - 1].trim().split(' ')[0];
+                    if (best) img = abs(best);
+                }
+                if (!img) {
+                    var pimg = pic.find('img').attr('src') || '';
+                    if (pimg && !/^data:/i.test(pimg)) img = abs(pimg);
+                }
+            } else {
+                var imgEl = tile.find('img').first();
+                var candidates = [];
+                if (imgEl && imgEl.attr('srcset')) candidates = imgEl.attr('srcset').split(',').map(function(s){ return s.trim().split(' ')[0]; });
+                candidates.push(imgEl && imgEl.attr('data-src')); candidates.push(imgEl && imgEl.attr('src'));
+                for (var i = candidates.length - 1; i >= 0; i--) {
+                    var u = candidates[i] || '';
+                    if (!u || /^data:/i.test(u)) continue;
+                    img = abs(u);
+                    break;
+                }
+            }
+
+            if (href && title) items.push({ title: title, productUrl: href, imageUrl: img, price: price });
+        });
+        // Respect visible count; avoid duplicates/non-product tiles
+        if (items.length > 16) items = items.slice(0, 16);
+        (items || []).forEach(function(p){
+            products.push({ title: p.title || '', productUrl: p.productUrl || '', imageUrl: p.imageUrl || '', price: p.price || '-', detail: '', from: 'izods' });
+        });
+        try {
+            var ts = new Date();
+            function pad(n){ return n < 10 ? ('0' + n) : n; }
+            var filename = 'izods_' + ts.getFullYear() + pad(ts.getMonth()+1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes()) + pad(ts.getSeconds()) + '.json';
+            // saveProductsToFile(items, filename);
+        } catch (e) { console.warn('IZODS: failed to write file snapshot:', e && (e.message || e)); }
+        console.log('IZODS extracted ' + (items ? items.length : 0) + ' product(s).');
+    } catch (err) {
+        console.error('IZODS scraping error:', err && (err.message || err));
+    }
+}
+// Scrape Appelboom search results (static HTML)
+async function appelboomScrape(url) {
+    console.log('Appelboom scraping started');
+    try {
+        var resp = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-GB,en;q=0.9'
+            },
+            timeout: 120000
+        });
+        var html = typeof resp.data === 'string' ? resp.data : '';
+        if (!html) { console.warn('Appelboom: empty HTML'); return; }
+        var $ = cheerio.load(html);
+        function abs(u) {
+            if (!u) return '';
+            if (/^data:/i.test(u)) return u; // keep data URLs as-is
+            if (/^https?:\/\//i.test(u)) return u.split('?')[0];
+            if (u.indexOf('//') === 0) return 'https:' + u.split('?')[0];
+            if (u.charAt(0) !== '/') u = '/' + u;
+            return 'https://appelboom.com' + u.split('?')[0];
+        }
+        function absKeepQuery(u) {
+            if (!u) return '';
+            if (/^data:/i.test(u)) return u;
+            if (/^https?:\/\//i.test(u)) return u; // keep querystring
+            if (u.indexOf('//') === 0) return 'https:' + u;
+            if (u.charAt(0) !== '/') u = '/' + u;
+            return 'https://appelboom.com' + u;
+        }
+        var items = [];
+        var seenHref = {};
+        // Limit to the main content grid to avoid "Most viewed" widgets
+        $('#content .product-grid .product-thumb').each(function(){
+            var card = $(this);
+            // exclude module blocks if any
+            if (card.closest('.module, #column-right, #column-left').length) return;
+            var a = card.find('.image a[href], .caption a[href]').first();
+            var href = absKeepQuery(a.attr('href') || '');
+            if (!href || seenHref[href]) return; seenHref[href] = true;
+            var title = (card.find('.caption a').first().text() || a.attr('title') || a.text() || '').replace(/\s+/g, ' ').trim();
+            if (!title) title = (card.find('h4 a, h4').first().text() || '').replace(/\s+/g, ' ').trim();
+            // Prefer listed price (without Ex Tax)
+            var rawPrice = (card.find('.price').first().text() || '').replace(/\s+/g, ' ').trim();
+            var price = rawPrice.replace(/\s*Ex\s*Tax:.*$/i, '').trim();
+            if (!price) {
+                var m = (card.text() || '').replace(/\s+/g, ' ').match(/(€|EUR|£|GBP|\$|USD)\s?\d[\d.,]*/);
+                price = m ? m[0] : '-';
+            }
+            // Image: prefer non-base64 sources and known cache path
+            var img = '';
+            var imgEl = card.find('.image img').first();
+            var srcOrder = [imgEl && imgEl.attr('data-src'), imgEl && imgEl.attr('data-original'), imgEl && imgEl.attr('src')];
+            for (var i = 0; i < srcOrder.length; i++) {
+                var u = srcOrder[i] || '';
+                if (!u) continue;
+                if (/^data:/i.test(u)) continue; // skip placeholders
+                img = abs(u);
+                break;
+            }
+            // Normalize to the cached 160x160 version if path indicates catalog image
+            if (!img) {
+                // last resort: try building from known path in page
+                var possible = (card.find('img').attr('src') || '').replace(/^data:.*/, '');
+                if (possible) img = abs(possible);
+            }
+            items.push({ title: title, productUrl: href, imageUrl: img, price: price });
+        });
+        (items || []).forEach(function(p){
+            products.push({ title: p.title || '', productUrl: p.productUrl || '', imageUrl: p.imageUrl || '', price: p.price || '-', detail: '', from: 'appelboom' });
+        });
+        try {
+            var ts = new Date();
+            function pad(n){ return n < 10 ? ('0' + n) : n; }
+            var filename = 'appelboom_' + ts.getFullYear() + pad(ts.getMonth()+1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes()) + pad(ts.getSeconds()) + '.json';
+            // saveProductsToFile(items, filename);
+        } catch (e) { console.warn('Appelboom: failed to write file snapshot:', e && (e.message || e)); }
+        console.log('Appelboom extracted ' + (items ? items.length : 0) + ' product(s).');
+    } catch (err) {
+        console.error('Appelboom scraping error:', err && (err.message || err));
+    }
+}
 var axios = require('axios');
 var cheerio = require('cheerio');
 var express = require('express');
@@ -7,6 +171,13 @@ var cron = require('node-cron');
 var puppeteer;
 var fs = require('fs');
 
+
+var kleinanzeigenScrapeConfig = {
+    method: 'get',
+    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.kleinanzeigen.de%2Fs-montblanc-149%2Fk0&token=f0f6f64beecf4b00b2f5004329348b6098757ffb1a3',
+    headers: {
+    },
+};
 
 var ebayScrapeConfig = {
     method: 'get',
@@ -26,11 +197,24 @@ var carousellScrapeConfig = {
     headers: {
     },
 };
+var subitoScrapeConfig = {
+    method: 'get',
+    url: 'http://api.scrape.do/?url=https%3A%2F%2Fwww.subito.it%2Fannunci-italia%2Fvendita%2Fusato%2F%3Fq%3D%E2%80%9Cmontblanc%E2%80%9D%2Band%2B%E2%80%9C149%E2%80%9D%26qso%3Dtrue&token=f0f6f64beecf4b00b2f5004329348b6098757ffb1a3&render=true&blockResources=false',
+    headers: {
+    },
+};
 // Mongo configuration
 var MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/';
 var DB_NAME = process.env.DB_NAME || 'products_db';
 var COLLECTION_NAME = process.env.COLLECTION_NAME || 'products';
 var TODAY_COLLECTION_NAME = process.env.TODAY_COLLECTION_NAME || 'todayproducts';
+
+// Known scraping sources for site count stats
+var KNOWN_SOURCES = [
+  'ebay', 'lotArt', 'carousell', 'invaluable', 'salesroom', 'dylanStephen',
+  'penLoverBoutique', 'vintageAndModernPens', 'catawiki', 'milanuncios',
+  'cultpens', 'appelboom', 'izods', 'subito', 'kleinanzeigen', 'chatterleyluxuries', 'cruzaltpens', 'penworld', '1stlibs'
+];
 
 async function saveProductsToMongo(products) {
   if (!Array.isArray(products) || products.length === 0) {
@@ -68,15 +252,8 @@ async function saveProductsToMongo(products) {
         continue;
       }
       try {
-        var existing = await collection.findOne({ title: doc.title });
-        var exsting1 = await collection.findOne({ link: doc.link });
-        if (existing && exsting1) {
-          await collection.updateOne({ _id: existing._id }, { $set: doc });
-          summary.updated += 1;
-        } else if(exsting1) {
-          await collection.updateOne({ _id: exsting1._id }, { $set: doc });
-          summary.updated += 1;
-        } else if (existing && existing.from === 'ebay') {
+        var existing = await collection.findOne({ link: doc.link });
+        if (existing) {
           await collection.updateOne({ _id: existing._id }, { $set: doc });
           summary.updated += 1;
         } else {
@@ -279,6 +456,111 @@ async function ebayScrape() {
         }
         } catch (e) {
         console.error('Error during product extraction:', e);
+        }
+    })
+    .catch(function (error) {
+        console.log(error);
+    });
+}
+async function kleinanzeigenScrape() {
+    console.log('Kleinanzeigen scraping started');
+    return axios(kleinanzeigenScrapeConfig)
+    .then(function (response) {
+        try {
+            var html = typeof response.data === 'string' ? response.data : '';
+            if (!html) {
+                console.warn('Kleinanzeigen: response is not HTML string; skipping.');
+                return;
+            }
+            var $ = cheerio.load(html);
+            function abs(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u.split('?')[0].split('#')[0];
+                if (u.indexOf('//') === 0) return 'https:' + u.split('?')[0].split('#')[0];
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return 'https://www.kleinanzeigen.de' + u.split('?')[0].split('#')[0];
+            }
+            function absKeepQuery(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u;
+                if (u.indexOf('//') === 0) return 'https:' + u;
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return 'https://www.kleinanzeigen.de' + u;
+            }
+            var seen = {};
+            var cards = [];
+            // Prefer explicit ad cards first
+            cards = cards.concat($('article[data-adid], article.aditem, li.ad-listitem, div.aditem').toArray());
+            // Fallback: any anchor to a listing page
+            var listingAnchors = $('a[href*="/s-anzeige/"]').toArray();
+            listingAnchors.forEach(function (aEl) {
+                var aNode = $(aEl);
+                var card = aNode.closest('article, li, div');
+                if (card && card.length) cards.push(card[0]); else cards.push(aEl);
+            });
+            if (!cards.length) cards = $('a[href]').toArray(); // last resort
+            cards.forEach(function (el) {
+                var node = $(el);
+                // Link
+                var a = node.find('a[href*="/s-anzeige/"]').first();
+                if (!a || a.length === 0) a = (node.is('a') ? node : $());
+                var href = (a.attr('href') || '').trim();
+                if (!href) return;
+                var productUrl = abs(href);
+                if (!productUrl || seen[productUrl]) return;
+                seen[productUrl] = true;
+                // Title: prefer dedicated title elements, then anchor title, then slug fallback
+                var titleSel = node.find('h2, h3, [data-testid="ad-title"], .aditem-main--middle--title, .aditem-main--title').first();
+                var titleFromNode = (titleSel.text() || '').replace(/\s+/g, ' ').trim();
+                var titleAttr = (a.attr('title') || '').replace(/\s+/g, ' ').trim();
+                var titleText = titleFromNode || titleAttr || (a.text() || '').replace(/\s+/g, ' ').trim();
+                if (!titleText || titleText.length < 3) {
+                    try {
+                        var pathPart = productUrl.split('?')[0].split('#')[0];
+                        var slug = (pathPart.split('/s-anzeige/')[1] || '').split('/')[0] || '';
+                        slug = slug.replace(/-/g, ' ').trim();
+                        if (slug && slug.length >= 3) titleText = slug;
+                    } catch (_e) {}
+                }
+                // Image: prefer picture/srcset, keep query params
+                var imageUrl = '';
+                var pic = node.find('picture').first();
+                if (pic && pic.length) {
+                    var ss = (pic.find('source[srcset]').first().attr('srcset') || pic.find('img').attr('srcset') || '').trim();
+                    if (ss) {
+                        var parts = ss.split(',').map(function (s) { return (s.trim().split(' ')[0] || ''); }).filter(Boolean);
+                        if (parts.length) imageUrl = parts[parts.length - 1];
+                    }
+                    if (!imageUrl) {
+                        var pimg = (pic.find('img').attr('src') || '').trim();
+                        if (pimg) imageUrl = pimg;
+                    }
+                }
+                if (!imageUrl) {
+                    var imgEl = node.find('img').first();
+                    imageUrl = (imgEl.attr('data-src') || imgEl.attr('data-lazy') || imgEl.attr('src') || '').trim();
+                }
+                imageUrl = absKeepQuery(imageUrl);
+                // Price: prefer explicit price nodes, require currency symbol
+                var priceNode = node.find('[data-testid="ad-price"], .aditem-main--middle--price-shipping, .aditem-main--middle .aditem-main--middle--price').first();
+                var priceText = (priceNode.text() || '').replace(/\s+/g, ' ').trim();
+                if (!/(€|EUR|\bEUR\b)/i.test(priceText)) {
+                    var contextText = (node.text() || '').replace(/\s+/g, ' ');
+                    var m = contextText.match(/(€|EUR)\s?\d[\d.,]*/i);
+                    priceText = m ? m[0].trim() : '-';
+                }
+                products.push({
+                    title: titleText || productUrl,
+                    productUrl: productUrl,
+                    imageUrl: imageUrl,
+                    price: priceText || '-',
+                    detail: '',
+                    from: 'kleinanzeigen'
+                });
+            });
+            console.log('Kleinanzeigen extracted ' + (Object.keys(seen).length) + ' product(s).');
+        } catch (e) {
+            console.error('Kleinanzeigen parse error:', e && (e.message || e));
         }
     })
     .catch(function (error) {
@@ -767,8 +1049,33 @@ async function carousellScrape(){
                         if (u.charAt(0) !== '/') u = '/' + u;
                         return 'https://www.carousell.sg' + u;
                     }
+                    function normalizeCarousellUrl(u) {
+                        try {
+                            if (!u) return '';
+                            // Ensure absolute form first
+                            var urlStr = absolute(u);
+                            // Strip query/hash
+                            var base = urlStr.split('#')[0].split('?')[0];
+                            var seg = '';
+                            var idx = base.indexOf('/p/');
+                            if (idx !== -1) {
+                                seg = base.slice(idx + 3);
+                            }
+                            seg = seg.replace(/^\/+|\/+$/g, '');
+                            // Extract numeric id and slug
+                            var idMatch = seg.match(/(\d{6,})/);
+                            var id = idMatch ? idMatch[1] : '';
+                            var slug = seg.replace(/-?\d{6,}.*/, '');
+                            slug = slug.replace(/[^a-z0-9-]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+                            if (id) {
+                                var slugPart = slug ? (slug + '-') : '';
+                                return 'https://www.carousell.sg/p/' + slugPart + id + '/';
+                            }
+                            return base;
+                        } catch (e) { return absolute(u).split('#')[0].split('?')[0]; }
+                    }
 
-                    var productUrl = absolute(href);
+                    var productUrl = normalizeCarousellUrl(href);
 
                     var title = (a.attr('aria-label') || '').trim();
                     if (!title) title = (a.find('img').attr('alt') || '').trim();
@@ -871,7 +1178,113 @@ async function carousellScrape(){
         console.log(error);
     });
 }
+async function subitoScrape(){
+   await axios(subitoScrapeConfig)
+    .then(function (response) {
+        var data = response && response.data;
+        var isHtml = typeof data === 'string';
+        var content = isHtml ? data : JSON.stringify(data || {}, null, 2);
+        try {
+            var html = isHtml ? content : '';
+            if (!html) return;
+            var $ = cheerio.load(html);
+            function abs(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u.split('?')[0].split('#')[0];
+                if (u.indexOf('//') === 0) return 'https:' + u.split('?')[0].split('#')[0];
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return 'https://www.subito.it' + u.split('?')[0].split('#')[0];
+            }
+            function absKeepQuery(u) {
+                if (!u) return '';
+                if (/^https?:\/\//i.test(u)) return u; // keep query string for image rules
+                if (u.indexOf('//') === 0) return 'https:' + u;
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return 'https://www.subito.it' + u;
+            }
+            var seen = {};
+            // Prefer card containers and anchors that look like listing pages (.htm)
+            var cards = $('.SmallCard-module_card__3hfzu, [class*="SmallCard-module_card"], .item-card, article.item-card, li.item-card, article, li, div.items__item').toArray();
+            if (!cards.length) {
+                cards = $('a.SmallCard-module_link__hOkzY[href], a[href$=".htm"], a[href*="subito.it/"]').toArray();
+            }
+            cards.forEach(function (el) {
+                var node = $(el);
+                var a = node.find('a.SmallCard-module_link__hOkzY[href], a[href$=".htm"], a[href*="/hobby-"], a[href*="/annunci/"], a[href*="/ad/"]').first();
+                if (!a || a.length === 0) {
+                    if (node.is('a')) a = node; else return;
+                }
+                var href = (a.attr('href') || '').trim();
+                if (!href) return;
+                var productUrl = abs(href);
+                try {
+                    var uo = new URL(productUrl);
+                    var hostOk = /(^|\.)subito\.it$/i.test(uo.hostname) && !/^info\./i.test(uo.hostname);
+                    var pathOk = /-\d+\.htm($|[?#])/i.test(uo.pathname);
+                    if (!hostOk || !pathOk) return;
+                } catch (_e) { return; }
+                if (seen[productUrl]) return; seen[productUrl] = true;
 
+                var card = a.closest('.SmallCard-module_card__3hfzu, [class*="SmallCard-module_card"], .item-card, article, li, div');
+                // Title: prefer specific Subito title classes
+                var titleNode = card.find('h2.ItemTitle-module_item-title__VuKDo, h2[class*="ItemTitle-module_item-title"], .SmallCard-module_item-title__1y5U3').first();
+                var title = (titleNode.text() || a.attr('aria-label') || a.attr('title') || a.text() || '').replace(/\s+/g, ' ').trim();
+                if (!title || title.length < 3) {
+                    try {
+                        var slug = (productUrl.split('/').pop() || '').replace(/-/g, ' ').trim();
+                        // Remove trailing numeric id if present
+                        slug = slug.replace(/-\d+\.htm.*$/i, '').replace(/\.htm.*$/i, '').trim();
+                        if (slug && slug.length >= 3) title = slug;
+                    } catch (_e) {}
+                }
+
+                // Image: prefer <picture><source srcset> largest URL, then img
+                var imageUrl = '';
+                var picture = card.find('picture').first();
+                if (picture && picture.length) {
+                    var srcsetFull = (picture.find('source').first().attr('srcset') || '').trim();
+                    if (srcsetFull) {
+                        var parts = srcsetFull.split(',').map(function (s) { return s.trim().split(' ')[0]; }).filter(Boolean);
+                        if (parts.length) imageUrl = parts[parts.length - 1];
+                    }
+                    if (!imageUrl) {
+                        var imgP = picture.find('img').attr('src') || '';
+                        if (imgP) imageUrl = imgP.trim();
+                    }
+                }
+                if (!imageUrl) {
+                    var imgEl = card.find('img.CardImage-module_photo__WMsiO, img').first();
+                    imageUrl = (imgEl.attr('data-src') || imgEl.attr('data-lazy') || imgEl.attr('src') || '').trim();
+                }
+                imageUrl = absKeepQuery(imageUrl);
+
+                // Price: prefer specific price classes; fallback to text scan
+                var priceNode = card.find('p.index-module_price__N7M2x, .SmallCard-module_price__yERv7, [class*="price__"], [class*="price-group"], [class*="_price"], .index-module_price__N7M2x').first();
+                var priceText = (priceNode.text() || '').replace(/\s+/g, ' ').trim();
+                if (!/(€|EUR|\bEUR\b|\bEuro\b)/i.test(priceText)) {
+                    var contextText = (card.text() || a.text() || '').replace(/\s+/g, ' ');
+                    var m = contextText.match(/(€|EUR|\bEUR\b|\bEuro\b)\s?\d[\d.,]*/i);
+                    priceText = m ? m[0].trim() : '-';
+                }
+
+                products.push({
+                    title: title || productUrl,
+                    productUrl: productUrl,
+                    imageUrl: imageUrl,
+                    price: priceText,
+                    detail: '',
+                    from: 'subito'
+                });
+            });
+            console.log('Subito extracted ' + Object.keys(seen).length + ' product(s).');
+        } catch (parseErr) {
+            console.log('Subito parse error:', parseErr && (parseErr.message || parseErr));
+        }
+    })
+    .catch(function (error) {
+        console.log(error);
+    });
+}
 // Scrape Dylan Stephen search results using Puppeteer
 async function dylanStephenScrapePage(url) {
     console.log('Dylan Stephen scraping (Puppeteer) started');
@@ -906,19 +1319,7 @@ async function dylanStephenScrapePage(url) {
             });
         } catch (e) {}
         page.setDefaultNavigationTimeout(120000);
-        // Some hosts keep long-lived connections causing nav timeouts on cloud
-        // Use timeout:0 and rely on explicit waits below
-        var maxAttempts = 2;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 0 });
-                break;
-            } catch (navErr) {
-                if (attempt === maxAttempts) throw navErr;
-                try { await page.waitForTimeout(1500); } catch (e) {}
-                try { await page.goto('about:blank'); } catch (e) {}
-            }
-        }
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
         await new Promise(function (r) { setTimeout(r, 1500); });
 
         // Attempt to accept cookie banner if present
@@ -1051,7 +1452,171 @@ async function dylanStephenScrapePage(url) {
         }
     }
 }
+// Scrape Chatterley Luxuries (WooCommerce) search results using Puppeteer
+async function chatterleyLuxuriesScrapePage(url) {
+    console.log('Chatterley Luxuries scraping (Puppeteer) started');
+    if (!puppeteer) {
+        try { puppeteer = require('puppeteer'); } catch (e) {
+            console.error('Puppeteer not installed. Run npm install puppeteer');
+            return;
+        }
+    }
+    var browser;
+    try {
+        browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+        var page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1366, height: 900 });
+        try { await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-GB,en;q=0.9' }); } catch (e) {}
+        try {
+            await page.setRequestInterception(true);
+            page.on('request', function (req) {
+                var type = req.resourceType();
+                var urlStr = req.url();
+                if (type === 'media' || type === 'font') return req.abort();
+                if (/google-analytics|gtm|doubleclick|facebook|hotjar|segment|optimizely|snowplow|clarity|datadog|newrelic/i.test(urlStr)) return req.abort();
+                return req.continue();
+            });
+        } catch (e) {}
+        page.setDefaultNavigationTimeout(180000);
 
+        async function tryGoto(p, u) {
+            var attempts = [
+                { waitUntil: 'domcontentloaded', timeout: 120000 },
+                { waitUntil: 'networkidle2', timeout: 150000 },
+                { waitUntil: 'load', timeout: 150000 }
+            ];
+            for (var i = 0; i < attempts.length; i++) {
+                try {
+                    await p.goto(u, attempts[i]);
+                    return true;
+                } catch (e) {
+                    // continue
+                }
+            }
+            return false;
+        }
+
+        var navOk = false;
+        try { navOk = await tryGoto(page, url); } catch (_e) { navOk = false; }
+        if (navOk) {
+            try { await page.waitForSelector('ul.products li.product, .woocommerce ul.products', { timeout: 60000 }); } catch (e) {}
+        }
+        // Scroll to load any lazy content
+        async function autoScroll(p) {
+            await p.evaluate(async function () {
+                await new Promise(function (resolve) {
+                    var total = 0; var step = 600;
+                    var timer = setInterval(function () {
+                        var sh = document.body.scrollHeight;
+                        window.scrollBy(0, step);
+                        total += step;
+                        if (total >= sh - window.innerHeight - 100) { clearInterval(timer); resolve(); }
+                    }, 200);
+                });
+            });
+        }
+        var results = [];
+        if (navOk) {
+            await autoScroll(page);
+            results = await page.evaluate(function () {
+            function abs(u) {
+                if (!u) return '';
+                if (/^(https?:|data:|blob:)/i.test(u)) return u;
+                if (u.indexOf('//') === 0) return 'https:' + u;
+                if (u.charAt(0) !== '/') u = '/' + u;
+                return window.location.origin + u;
+            }
+            function textFrom(root, selectors) {
+                for (var i = 0; i < selectors.length; i++) {
+                    var n = root.querySelector(selectors[i]);
+                    if (n && n.textContent) return n.textContent.replace(/\s+/g, ' ').trim();
+                }
+                return '';
+            }
+            function getPrice(root) {
+                var selectors = ['.price .amount', '.woocommerce-Price-amount', '.price', '.amount'];
+                for (var i = 0; i < selectors.length; i++) {
+                    var n = root.querySelector(selectors[i]);
+                    if (n && n.textContent) return n.textContent.replace(/\s+/g, ' ').trim();
+                }
+                var txt = (root.textContent || '').replace(/\s+/g, ' ').trim();
+                var m = txt.match(/(€|EUR|£|GBP|\$|USD)\s?\d[\d.,]*/);
+                return m ? m[0] : '-';
+            }
+            function imgSrc(root) {
+                var img = root.querySelector('img');
+                if (!img) return '';
+                var srcset = (img.getAttribute('data-srcset') || img.getAttribute('srcset') || '').trim();
+                if (srcset) {
+                    var first = (srcset.split(',')[0] || '').trim();
+                    var url = first.split(' ')[0] || '';
+                    return url;
+                }
+                return (img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '').trim();
+            }
+            var items = [];
+            var nodes = document.querySelectorAll('ul.products li.product, .products li.product, li.product');
+            var seen = {};
+            nodes.forEach(function (node) {
+                var a = node.querySelector('a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link, a[href*="/product/"]') || node.querySelector('a[href]');
+                var href = a ? (a.getAttribute('href') || '') : '';
+                if (!href) return;
+                if (seen[href]) return; seen[href] = true;
+                var title = textFrom(node, ['.woocommerce-loop-product__title', '.product-title', 'h2.woocommerce-loop-product__title', 'h2', 'h3']);
+                if (!title) {
+                    var img = node.querySelector('img');
+                    if (img) title = (img.getAttribute('alt') || '').trim();
+                }
+                if (!title && a) title = (a.getAttribute('title') || a.textContent || '').replace(/\s+/g, ' ').trim();
+                var price = getPrice(node);
+                var imgUrl = imgSrc(node);
+                items.push({ title: title || '', productUrl: abs(href), imageUrl: abs(imgUrl) || '', price: price || '-' });
+            });
+            return items;
+            });
+        } else {
+            // HTTP fallback if navigation failed
+            try {
+                var axios = require('axios');
+                var cheerio = require('cheerio');
+                var resp = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-GB,en;q=0.9' }, timeout: 180000 });
+                var html = typeof resp.data === 'string' ? resp.data : '';
+                if (html) {
+                    var $ = cheerio.load(html);
+                    results = [];
+                    $('ul.products li.product, .products li.product, li.product').each(function(){
+                        var node = $(this);
+                        var a = node.find('a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link, a[href*="/product/"]').first();
+                        var href = (a.attr('href') || '').trim();
+                        var title = (node.find('.woocommerce-loop-product__title, .product-title, h2.woocommerce-loop-product__title, h2, h3').first().text() || a.attr('title') || a.text() || '').replace(/\s+/g, ' ').trim();
+                        var price = (node.find('.price .amount, .woocommerce-Price-amount, .price, .amount').first().text() || '').replace(/\s+/g, ' ').trim();
+                        var img = node.find('img').first();
+                        var imgUrl = (img.attr('data-src') || img.attr('data-original') || img.attr('src') || '').trim();
+                        function abs(u){ if(!u) return ''; if(/^https?:\/\//i.test(u)) return u; if(u.indexOf('//')===0) return 'https:'+u; if(u.charAt(0)!=='/') u='/'+u; return 'https://chatterleyluxuries.com'+u; }
+                        results.push({ title: title, productUrl: abs(href), imageUrl: abs(imgUrl), price: price || '-' });
+                    });
+                }
+            } catch (e) {
+                console.warn('Chatterley Luxuries: HTTP fallback failed:', e && (e.message || e));
+                results = [];
+            }
+        }
+        // Filter: title must include both montblanc and 149
+        var filtered = (results || []).filter(function (p) {
+            var t = (p && p.title ? p.title : '').toLowerCase();
+            return /montblanc/.test(t) && /\b149\b/.test(t);
+        });
+        filtered.forEach(function (p) {
+            products.push({ title: p.title || '', productUrl: p.productUrl || '', imageUrl: p.imageUrl || '', price: p.price || '-', detail: '', from: 'chatterleyluxuries' });
+        });
+        console.log('Chatterley Luxuries extracted ' + filtered.length + ' product(s).');
+    } catch (err) {
+        console.error('Chatterley Luxuries Puppeteer error:', err && (err.message || err));
+    } finally {
+        if (browser) { try { await browser.close(); } catch (e) {} }
+    }
+}
 // Scrape Pen Lover Boutique (Shopify) search results using Puppeteer
 async function penLoverBoutiqueScrapePage(url) {
     console.log('Pen Lover Boutique scraping (Puppeteer) started');
@@ -1176,7 +1741,6 @@ async function penLoverBoutiqueScrapePage(url) {
         if (browser) { try { await browser.close(); } catch (e) {} }
     }
 }
-
 // Scrape Vintage and Modern Pens search results (WordPress)
 async function vintageAndModernPensScrapePage(url) {
     console.log('Vintage & Modern Pens scraping (Puppeteer) started');
@@ -1297,7 +1861,6 @@ async function vintageAndModernPensScrapePage(url) {
         if (browser) { try { await browser.close(); } catch (e) {} }
     }
 }
-
 // Scrape Catawiki search results
 async function catawikiScrapePage(url) {
     console.log('Catawiki scraping (Puppeteer) started');
@@ -1348,7 +1911,102 @@ async function catawikiScrapePage(url) {
         if (browser) { try { await browser.close(); } catch (e) {} }
     }
 }
-
+// Scrape CruzaltPens search results (static HTML)
+async function cruzaltpensScrapePage(url) {
+    console.log('CruzaltPens scraping started');
+    try {
+        var resp = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36', 'Accept-Language': 'en-GB,en;q=0.9', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }, timeout: 150000 });
+        var html = typeof resp.data === 'string' ? resp.data : '';
+        var usedFallback = false;
+        if (!html) { console.warn('CruzaltPens: empty HTML, will try Puppeteer fallback'); usedFallback = true; }
+        var $ = cheerio.load(html);
+        function abs(u) {
+            if (!u) return '';
+            if (/^https?:\/\//i.test(u)) return u.split('#')[0];
+            if (u.indexOf('//') === 0) return 'https:' + u.split('#')[0];
+            if (u.charAt(0) !== '/') u = '/' + u;
+            return 'https://www.cruzaltpens.com' + u.split('#')[0];
+        }
+        var items = [];
+        var seen = {};
+        // Product cards typically inside .js-product or .product-miniature
+        $('.product-miniature, .js-product, .product_list .product, li.ajax_block_product, .product-grid .product').each(function(){
+            var el = $(this);
+            var a = el.find('a.product-thumbnail, a.thumbnail, a[href*="/en/"]').first();
+            var href = (a.attr('href') || '').trim();
+            if (!href) return;
+            var productUrl = abs(href);
+            if (seen[productUrl]) return; seen[productUrl] = true;
+            var title = (el.find('.product-title a, .product-title, h3, h2').first().text() || a.attr('title') || a.text() || '').replace(/\s+/g, ' ').trim();
+            var img = '';
+            var imgEl = el.find('img').first();
+            if (imgEl && imgEl.length) {
+                var ss = (imgEl.attr('data-srcset') || imgEl.attr('srcset') || '').trim();
+                if (ss) {
+                    var parts = ss.split(',').map(function (s) { return s.trim().split(' ')[0]; }).filter(Boolean);
+                    if (parts.length) img = parts[parts.length - 1];
+                }
+                if (!img) img = (imgEl.attr('data-full-size-image-url') || imgEl.attr('data-src') || imgEl.attr('data-original') || imgEl.attr('src') || '').trim();
+            }
+            var price = (el.find('.price .amount, .price, .product-price, .price-amount, .current-price').first().text() || '').replace(/\s+/g, ' ').trim();
+            items.push({ title: title, productUrl: productUrl, imageUrl: abs(img), price: price || '-' });
+        });
+        // Filter to montblanc + 149 only
+        var filtered = (items || []).filter(function (p) {
+            var t = (p.title || '').toLowerCase();
+            return /montblanc/.test(t) && /\b149\b/.test(t);
+        });
+        if (!usedFallback && filtered.length === 0) {
+            usedFallback = true;
+            console.warn('CruzaltPens: 0 items from static parse, trying Puppeteer fallback');
+        }
+        if (usedFallback) {
+            // Puppeteer fallback
+            if (!puppeteer) { try { puppeteer = require('puppeteer'); } catch (e) { console.error('Puppeteer not installed. Run npm install puppeteer'); return; } }
+            var browser;
+            try {
+                browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+                var page = await browser.newPage();
+                await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
+                await page.setViewport({ width: 1366, height: 900 });
+                try { await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-GB,en;q=0.9' }); } catch (e) {}
+                try { await page.setRequestInterception(true); page.on('request', function (req) { var type = req.resourceType(); var urlStr = req.url(); if (type==='media'||type==='font') return req.abort(); if (/google-analytics|gtm|doubleclick|facebook|hotjar|segment|optimizely|snowplow/i.test(urlStr)) return req.abort(); return req.continue(); }); } catch (e) {}
+                page.setDefaultNavigationTimeout(150000);
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 150000 });
+                try { await page.waitForSelector('.product-miniature, .js-product, .product_list .product, li.ajax_block_product', { timeout: 60000 }); } catch (e) {}
+                // Accept cookies if banner present
+                try {
+                    await page.evaluate(function(){
+                        var btns = Array.prototype.slice.call(document.querySelectorAll('button, a'));
+                        var accept = btns.find(function(b){ var t=((b.innerText||b.textContent||'')+'').toLowerCase(); return /accept|agree|continu|aceptar|continuar/.test(t); });
+                        if (accept) accept.click();
+                    });
+                } catch (e) {}
+                // Scroll to load images
+                await page.evaluate(async function(){ await new Promise(function(resolve){ var total=0, step=600; var timer=setInterval(function(){ var sh=document.body.scrollHeight; window.scrollBy(0, step); total+=step; if (total>=sh-window.innerHeight-100){ clearInterval(timer); resolve(); } }, 200); }); });
+                var results = await page.evaluate(function(){
+                    function abs(u){ if(!u) return ''; if(/^https?:\/\//i.test(u)) return u; if(u.indexOf('//')===0) return 'https:'+u; if(u.charAt(0)!=='/') u='/'+u; return window.location.origin+u; }
+                    function textFrom(root, sels){ for (var i=0;i<sels.length;i++){ var n=root.querySelector(sels[i]); if(n&&n.textContent) return n.textContent.replace(/\s+/g,' ').trim(); } return ''; }
+                    function imgSrc(root){ var img=root.querySelector('img'); if(!img) return ''; var ss=(img.getAttribute('data-srcset')||img.getAttribute('srcset')||'').trim(); if(ss){ var parts=ss.split(',').map(function(s){return s.trim().split(' ')[0];}).filter(Boolean); if(parts.length) return parts[parts.length-1]; } return (img.getAttribute('data-full-size-image-url')||img.getAttribute('data-src')||img.getAttribute('data-original')||img.getAttribute('src')||'').trim(); }
+                    var out=[]; var nodes=document.querySelectorAll('.product-miniature, .js-product, .product_list .product, li.ajax_block_product'); var seen={};
+                    nodes.forEach(function(n){ var a=n.querySelector('a.product-thumbnail, a.thumbnail, a[href]'); if(!a) return; var href=a.getAttribute('href')||''; if(!href||seen[href]) return; seen[href]=true; var title = textFrom(n, ['.product-title a','.product-title','h3','h2']) || (a.getAttribute('title')||a.textContent||'').replace(/\s+/g,' ').trim(); var price = textFrom(n, ['.price .amount','.price','.product-price','.current-price']); var img = imgSrc(n); out.push({ title: title||'', productUrl: abs(href), imageUrl: abs(img), price: price||'-' }); });
+                    return out;
+                });
+                filtered = (results || []).filter(function (p) { var t=(p.title||'').toLowerCase(); return /montblanc/.test(t) && /\b149\b/.test(t); });
+            } catch (e) {
+                console.error('CruzaltPens Puppeteer fallback error:', e && (e.message || e));
+            } finally {
+                try { if (browser) await browser.close(); } catch (e) {}
+            }
+        }
+        filtered.forEach(function (p) {
+            products.push({ title: p.title || '', productUrl: p.productUrl || '', imageUrl: p.imageUrl || '', price: p.price || '-', detail: '', from: 'cruzaltpens' });
+        });
+        console.log('CruzaltPens extracted ' + ((items && items.length) || 0) + ' product(s) before filtering; kept ' + filtered.length + '.');
+    } catch (err) {
+        console.error('CruzaltPens scraping error:', err && (err.message || err));
+    }
+}
 // Scrape Cult Pens search results
 async function cultPensScrapePage(url) {
     console.log('Cult Pens scraping (Puppeteer) started');
@@ -1364,7 +2022,7 @@ async function cultPensScrapePage(url) {
         var page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1366, height: 900 });
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 120000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
         // Allow dynamic product grid to render
         try {
             await page.waitForSelector('a[href*="/products/"]', { timeout: 45000 });
@@ -1482,7 +2140,7 @@ async function cultPensScrapePage(url) {
             var ts = new Date();
             function pad(n){ return n < 10 ? ('0' + n) : n; }
             var filename = 'cultpens_' + ts.getFullYear() + pad(ts.getMonth()+1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes()) + pad(ts.getSeconds()) + '.json';
-            saveProductsToFile(cultpensItems, filename);
+            // saveProductsToFile(cultpensItems, filename);
         } catch (e) { console.warn('Cult Pens: failed to write file snapshot:', e && (e.message || e)); }
         console.log('Cult Pens extracted ' + ((results && results.length) || 0) + ' product(s).');
     } catch (err) {
@@ -1491,7 +2149,6 @@ async function cultPensScrapePage(url) {
         if (browser) { try { await browser.close(); } catch (e) {} }
     }
 }
-
 // Scrape Milanuncios search results
 async function milanunciosScrapePage(url) {
     console.log('Milanuncios scraping (Puppeteer) started');
@@ -1629,26 +2286,39 @@ async function main() {
         await catawikiScrapePage('https://www.catawiki.com/en/s?q=%22montblanc%22+and+%22149%22&filters=966%255B%255D%3D87393%26l2_categories%255B%255D%3D1375');
         await milanunciosScrapePage('https://www.milanuncios.com/anuncios/?s=montblanc%20149&orden=relevance&fromSearch=1&fromSuggester=0&suggestionUsed=0&hitOrigin=home_search&recentSearchShowed=0&recentSearchUsed=0');
         await cultPensScrapePage('https://cultpens.com/pages/search-results?options%5Bprefix%5D=last&q=%22montblanc%22+and+%22149%22&productListPgNo=1');
+        await appelboomScrape('https://appelboom.com/index.php?route=product/search&search=montblanc%20149%20fountain%20pen');
+        await izodsScrape('https://izods.ink/search?q=montblanc+149&_pos=4&_psq=%22m&_ss=e&_v=1.0');
+        await kleinanzeigenScrape();
+        await subitoScrape();
+        await chatterleyLuxuriesScrapePage('https://chatterleyluxuries.com/?post_type=product&s=montblanc+149&asp_active=1&p_asid=1&p_asp_data=1&filters_initial=1&filters_changed=0&qtranslate_lang=0&woo_currency=USD&current_page_id=378683&pr_stock=instock');
+        await cruzaltpensScrapePage('https://www.cruzaltpens.com/en/module/ambjolisearch/jolisearch?s=montblanc+149');
         // Write a snapshot of this run to the todayproducts collection (no indexes)
-        await saveProductsToTodayCollection(products);
-        // await saveProductsToFile(products, 'products_all.json');
+        // await saveProductsToTodayCollection(products);
+        // saveProductsToFile(products);
         await saveAllProductsToMongo();
         console.log('All done.');
     } catch (err) {
         console.error('Pipeline error:', err);
     }
 }
-// main();
-cultPensScrapePage('https://cultpens.com/pages/search-results?options%5Bprefix%5D=last&q=%22montblanc%22+and+%22149%22&productListPgNo=1');
+
 
 // --- Simple API server (Express) ---
 var app = express();
 app.use(express.json());
 // Basic CORS handling without extra deps
 app.use(function (req, res, next) {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  var origin = req.headers.origin || '*';
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Vary', 'Origin');
+  // Allow credentials if needed in the future (browser may require it for some modes)
+  res.header('Access-Control-Allow-Credentials', 'true');
+
+  var reqHeaders = req.headers['access-control-request-headers'] || 'Content-Type, Authorization, ngrok-skip-browser-warning';
+  var reqMethod = req.headers['access-control-request-method'] || 'GET,POST,PUT,DELETE,OPTIONS';
+  res.header('Access-Control-Allow-Methods', reqMethod);
+  res.header('Access-Control-Allow-Headers', reqHeaders);
+  res.header('Access-Control-Max-Age', '86400');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
@@ -1842,7 +2512,7 @@ app.get('/items', async function (req, res) {
 // GET /items/today → items from todayproducts collection
 app.get('/items/today', async function (req, res) {
   try {
-    var collection = await getTodayCollectionHandle();
+    var collection = await getCollectionHandle();
     var q = (req.query.q || '').toString().trim();
     var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
@@ -1852,7 +2522,12 @@ app.get('/items/today', async function (req, res) {
       var siteFilter = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
       baseAnd.push({ from: siteFilter });
     }
-    var items = await collection.find({ $and: baseAnd }).sort({ _id: -1 }).toArray();
+    var end = new Date();
+    end.setHours(23, 59, 59, 999);
+    var start = new Date();
+    start.setHours(0, 0, 0, 0);
+    baseAnd.push({ createdAt: { $gte: start, $lte: end } });
+    var items = await collection.find({ $and: baseAnd }).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
         id: String(item._id),
@@ -1959,7 +2634,6 @@ app.get('/items/saved', async function (req, res) {
 app.get('/items/stats', async function (req, res) {
   try {
     var collection = await getCollectionHandle();
-    var todayCollection = await getTodayCollectionHandle();
     var q = (req.query.q || '').toString().trim();
     var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
@@ -1975,15 +2649,25 @@ app.get('/items/stats', async function (req, res) {
     }
 
     var now = new Date();
+    var startToday = new Date();
+    startToday.setHours(0, 0, 0, 0);
+    var endToday = new Date();
+    endToday.setHours(23, 59, 59, 999);
+    var todayFilter = { $and: [ baseFilter, { createdAt: { $gte: startToday, $lte: endToday } } ] };
     var last3Filter = { $and: [ baseFilter, { createdAt: { $gte: last3Start, $lte: now } } ] };
 
     var [todayCount, last3DaysCount, savedCount] = await Promise.all([
-      todayCollection.countDocuments(baseFilter),
+      collection.countDocuments(todayFilter),
       collection.countDocuments(last3Filter),
       collection.countDocuments({ $and: [ baseFilter, { like: true } ] })
     ]);
 
-    res.json({ today: todayCount || 0, last3days: last3DaysCount || 0, saved: savedCount || 0 });
+    // Active sources: distinct 'from' values present in collection for baseFilter
+    var activeSources = await collection.distinct('from', baseFilter);
+    var activeCount = Array.isArray(activeSources) ? activeSources.length : 0;
+    var totalSources = KNOWN_SOURCES.length;
+
+    res.json({ today: todayCount || 0, last3days: last3DaysCount || 0, saved: savedCount || 0, sources: { total: totalSources, active: activeCount } });
   } catch (err) {
     console.error('GET /items/stats error:', err);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -2058,12 +2742,12 @@ function startServer() {
 //     });
 // })();
 
-
-
 app.get('/', (req, res) => {
   res.send('Hello World');
 });
-// startServer();
+startServer();
+// main();
+
 // --- Schedule daily scrape at 00:00 (system local time) ---
 var isScheduledRunInProgress = false;
 // Run scrape at 00:00, 06:00, 12:00, 18:00 (CET/CEST)
