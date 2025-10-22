@@ -2742,8 +2742,150 @@ function startServer() {
 //     });
 // })();
 
+// --- Pensites Search Functions ---
+var Pensites = [
+  'https://www.penaddict.com',
+  'https://www.fountainpennetwork.com',
+  'https://www.reddit.com/r/fountainpens',
+  'https://www.fountainpengeek.com'
+];
+
+function junkSearchPensites(query) {
+  console.log('Junk: Searching pensites for:', query);
+  var results = [];
+  
+  // Simulate search across multiple pensites
+  Pensites.forEach(function(site, index) {
+    var mockResults = Math.floor(Math.random() * 5) + 1;
+    for (var i = 0; i < mockResults; i++) {
+      results.push({
+        id: 'junk_' + Date.now() + '_' + index + '_' + i,
+        title: query + ' - ' + site.split('//')[1] + ' Result ' + (i + 1),
+        price: '$' + (Math.random() * 1000 + 10).toFixed(2),
+        image: 'https://via.placeholder.com/300x200?text=Junk+Pen+' + (i + 1),
+        url: site + '/search?q=' + encodeURIComponent(query),
+        source: 'junk_pensites',
+        relevance: Math.random(),
+        junkScore: Math.random() * 100
+      });
+    }
+  });
+  
+  // Sort by junk score (higher is more junk)
+  results.sort(function(a, b) { return b.junkScore - a.junkScore; });
+  
+  console.log('Junk: Found', results.length, 'junk results');
+  return results;
+}
+
+function junkAnalyzePensite(url) {
+  console.log('Junk: Analyzing pensite:', url);
+  var analysis = {
+    url: url,
+    junkLevel: Math.floor(Math.random() * 10) + 1,
+    penDensity: Math.random(),
+    spamScore: Math.random() * 100,
+    credibility: Math.random(),
+    lastUpdated: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000),
+    features: [
+      'Fake Reviews',
+      'Overpriced Items', 
+      'Spam Content',
+      'Broken Links',
+      'Pop-up Ads'
+    ].slice(0, Math.floor(Math.random() * 3) + 1),
+    recommendations: [
+      'Avoid this site',
+      'Use with caution',
+      'Good for reference only',
+      'High spam risk'
+    ][Math.floor(Math.random() * 4)]
+  };
+  
+  return analysis;
+}
+
+// --- Junk API Endpoints ---
+app.get('/api/junk/pensites', function(req, res) {
+  try {
+    var query = req.query.q || 'fountain pen';
+    var limit = parseInt(req.query.limit) || 20;
+    var results = junkSearchPensites(query);
+    
+    res.json({
+      query: query,
+      total: results.length,
+      results: results.slice(0, limit),
+      junkLevel: 'HIGH',
+      warning: 'These are junk results for testing purposes only'
+    });
+  } catch (err) {
+    console.error('Junk pensites API error:', err);
+    res.status(500).json({ error: 'Junk server error' });
+  }
+});
+
+app.get('/api/junk/analyze/:site', function(req, res) {
+  try {
+    var site = req.params.site;
+    var analysis = junkAnalyzePensite(site);
+    
+    res.json({
+      analysis: analysis,
+      timestamp: new Date().toISOString(),
+      junkStatus: analysis.junkLevel > 7 ? 'VERY_JUNKY' : 'MODERATELY_JUNKY'
+    });
+  } catch (err) {
+    console.error('Junk analysis API error:', err);
+    res.status(500).json({ error: 'Junk analysis failed' });
+  }
+});
+
+app.post('/api/junk/spam', function(req, res) {
+  try {
+    var spamData = req.body;
+    console.log('Junk: Received spam data:', spamData);
+    
+    // Simulate spam processing
+    var spamResult = {
+      id: 'spam_' + Date.now(),
+      processed: true,
+      spamScore: Math.random() * 100,
+      action: 'IGNORED',
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json({
+      message: 'Spam successfully processed (and ignored)',
+      result: spamResult
+    });
+  } catch (err) {
+    console.error('Junk spam API error:', err);
+    res.status(500).json({ error: 'Spam processing failed' });
+  }
+});
+
+app.get('/api/junk/stats', function(req, res) {
+  try {
+    var stats = {
+      totalJunkSites: junkPensites.length,
+      junkLevel: 'MAXIMUM',
+      spamCount: Math.floor(Math.random() * 1000) + 500,
+      fakeResults: Math.floor(Math.random() * 10000) + 1000,
+      credibilityScore: Math.random() * 10,
+      lastJunkUpdate: new Date().toISOString(),
+      warning: 'These statistics are completely fake and for testing only'
+    };
+    
+    res.json(stats);
+  } catch (err) {
+    console.error('Junk stats API error:', err);
+    res.status(500).json({ error: 'Junk stats failed' });
+  }
+});
+
 app.get('/', (req, res) => {
-  res.send('Hello World');
+  res.send('Hello World!');
 });
 startServer();
 // main();
