@@ -213,7 +213,7 @@ var TODAY_COLLECTION_NAME = process.env.TODAY_COLLECTION_NAME || 'todayproducts'
 var KNOWN_SOURCES = [
   'ebay', 'lotArt', 'carousell', 'invaluable', 'salesroom', 'dylanStephen',
   'penLoverBoutique', 'vintageAndModernPens', 'catawiki', 'milanuncios',
-  'cultpens', 'appelboom', 'izods', 'subito', 'kleinanzeigen', 'chatterleyluxuries', 'cruzaltpens', 'penworld', '1stlibs'
+  'cultpens', 'appelboom', 'izods', 'subito', 'kleinanzeigen', 'chatterleyluxuries', 'cruzaltpens', 'penworld', '1stlibs', 'vinted'
 ];
 
 async function saveProductsToMongo(products) {
@@ -547,7 +547,7 @@ async function kleinanzeigenScrape() {
                 if (!/(€|EUR|\bEUR\b)/i.test(priceText)) {
                     var contextText = (node.text() || '').replace(/\s+/g, ' ');
                     var m = contextText.match(/(€|EUR)\s?\d[\d.,]*/i);
-                    priceText = m ? m[0].trim() : '-';
+                    priceText = m ? m[0] : '-';
                 }
                 products.push({
                     title: titleText || productUrl,
@@ -2243,6 +2243,230 @@ async function milanunciosScrapePage(url) {
         if (browser) { try { await browser.close(); } catch (e) {} }
     }
 }
+async function vintedScrapeDomains(domainsOverride, saveFilePath, savePagePath) {
+    console.log('Vinted scraping (Puppeteer) started');
+    if (!puppeteer) {
+        try { puppeteer = require('puppeteer'); } catch (e) {
+            console.error('Puppeteer not installed. Run npm install puppeteer');
+            return;
+        }
+    }
+    var browser;
+    try {
+        browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+        var page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1366, height: 900 });
+
+        var domains = domainsOverride && Array.isArray(domainsOverride) && domainsOverride.length ? domainsOverride : [
+            'https://www.vinted.co.uk',
+            'https://www.vinted.sk',
+            'https://www.vinted.si',
+            'https://www.vinted.se',
+            'https://www.vinted.ro',
+            'https://www.vinted.pt',
+            'https://www.vinted.pl',
+            'https://www.vinted.nl',
+            'https://www.vinted.lv',
+            'https://www.vinted.lu',
+            'https://www.vinted.lt',
+            'https://www.vinted.it',
+            'https://www.vinted.ie',
+            'https://www.vinted.hu',
+            'https://www.vinted.hr',
+            'https://www.vinted.gr',
+            'https://www.vinted.fr',
+            'https://www.vinted.fi',
+            'https://www.vinted.es',
+            'https://www.vinted.ee',
+            'https://www.vinted.dk',
+            'https://www.vinted.de',
+            'https://www.vinted.cz',
+            'https://www.vinted.be',
+            'https://www.vinted.at'
+        ];
+        var pathAndQuery = '/catalog?search_text=montblanc%20149&brand_ids[]=229142&page=1&catalog[]=5428';
+
+        async function dismissConsent(p) {
+            try {
+                // first, try known Vinted GDPR button
+                var clicked = false;
+                try {
+                    await p.waitForSelector('[data-testid="gdpr-accept-all"], #onetrust-accept-btn-handler', { timeout: 5000 });
+                } catch(_e) {}
+                try {
+                    await p.click('[data-testid="gdpr-accept-all"]', { delay: 20 });
+                    clicked = true;
+                } catch(_e) {}
+                if (!clicked) { try { await p.click('#onetrust-accept-btn-handler', { delay: 20 }); clicked = true; } catch(_e) {} }
+                if (clicked) { await new Promise(function(r){ setTimeout(r, 400); }); return; }
+                await p.evaluate(function(){
+                    var tryClick = function(selector){ var n = document.querySelector(selector); if (n) n.click(); };
+                    tryClick('#onetrust-accept-btn-handler');
+                    var btns = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"], a'));
+                    var accepts = ['accept', 'agree', 'consent', 'akzeptieren', 'zustimmen', 'accepter', 'aceptar', 'aceitar', 'accetta', 'elfogad', 'godta', 'aceitar', 'apstiprināt', 'priimti'];
+                    for (var i = 0; i < btns.length; i++) {
+                        var t = (btns[i].innerText || btns[i].textContent || '').toLowerCase();
+                        if (accepts.some(function(w){ return t.indexOf(w) !== -1; })) { btns[i].click(); break; }
+                    }
+                });
+            } catch (e) {}
+        }
+
+        async function autoScroll(p) {
+            await p.evaluate(async function () {
+                await new Promise(function (resolve) {
+                    var total = 0; var step = 700;
+                    var timer = setInterval(function () {
+                        var sh = document.body.scrollHeight;
+                        window.scrollBy(0, step);
+                        total += step;
+                        if (total >= sh - window.innerHeight - 100) { clearInterval(timer); resolve(); }
+                    }, 250);
+                });
+            });
+        }
+
+        for (var di = 0; di < domains.length; di++) {
+            var base = domains[di];
+            var url = base + pathAndQuery;
+            try {
+                console.log('Vinted: visiting', url);
+                await page.goto(url, { waitUntil: 'networkidle2', timeout: 180000 });
+                await new Promise(function (r) { setTimeout(r, 1500); });
+                await dismissConsent(page);
+                try {
+                    await page.waitForSelector('[data-testid="feed-grid"], [data-testid*="items" i]', { timeout: 20000 });
+                } catch(_e) {}
+                try {
+                    await page.waitForFunction(function(){
+                        return document.querySelectorAll('a[href*="/items/"], a[data-testid="item-box"], [data-testid="feed-grid"] a').length > 0;
+                    }, { timeout: 60000 });
+                } catch (_e) {}
+                await autoScroll(page);
+                try {
+                    if (savePagePath) {
+                        var html = await page.content();
+                        var outPath = savePagePath;
+                        try {
+                            var u = new URL(base);
+                            var host = (u.host || 'vinted').replace(/[:/\\]/g, '_');
+                            if (savePagePath.indexOf('{host}') !== -1) outPath = savePagePath.replace('{host}', host);
+                        } catch(_u) {}
+                        fs.writeFileSync(outPath, html, 'utf8');
+                        console.log('Vinted: saved page HTML to', outPath);
+                    }
+                } catch(_e) {}
+
+                var results = await page.evaluate(function () {
+                    function abs(u) {
+                        if (!u) return '';
+                        if (/^https?:\/\//i.test(u)) return u.split('?')[0];
+                        if (u.indexOf('//') === 0) return 'https:' + u.split('?')[0];
+                        if (u.charAt(0) !== '/') u = '/' + u;
+                        return window.location.origin + u.split('?')[0];
+                    }
+                    function absKeep(u) {
+                        if (!u) return '';
+                        if (/^https?:\/\//i.test(u)) return u; // keep query params for signed CDN images
+                        if (u.indexOf('//') === 0) return 'https:' + u;
+                        if (u.charAt(0) !== '/') u = '/' + u;
+                        return window.location.origin + u;
+                    }
+                    function priceFrom(root) {
+                        // Search up to a few ancestors to capture price text that might be outside the anchor container
+                        var searchRoots = [];
+                        var cur = root;
+                        for (var depth = 0; depth < 5 && cur; depth++) { searchRoots.push(cur); cur = cur.parentElement; }
+                        searchRoots.push(document.body);
+
+                        var priceSelectors = [
+                            '[data-testid*="price" i]',
+                            '[data-testid="item-price"]',
+                            '[class*="price" i]',
+                            '[class*="Price" i]',
+                            '[data-testid*="Price" i]',
+                            '.text-bold',
+                            '.font-bold',
+                            '[class*="amount" i]',
+                            '[class*="cost" i]'
+                        ];
+                        var txt = '';
+                        for (var r = 0; r < searchRoots.length && !txt; r++) {
+                            var rootNode = searchRoots[r];
+                            for (var i = 0; i < priceSelectors.length; i++) {
+                                var sel = rootNode.querySelector(priceSelectors[i]);
+                                if (sel && sel.textContent) {
+                                    txt = sel.textContent.replace(/\s+/g, ' ').trim();
+                                    if (txt) break;
+                                }
+                            }
+                            if (!txt) {
+                                var t = (rootNode.textContent || '').replace(/\s+/g, ' ').trim();
+                                if (/(£|€|EUR|GBP|zł|PLN|Kč|CZK|Ft|HUF|kr|SEK|DKK)\s?\d[\d.,]*/i.test(t)) txt = t;
+                            }
+                        }
+
+                        if (!txt) return '-';
+
+                        // Prefer the first standalone currency amount (avoid the \"incl.\" variant if two exist)
+                        var match = txt.match(/(£|GBP|€|EUR|zł|PLN|Kč|CZK|Ft|HUF|kr|SEK|DKK)\s?\d[\d.,]*/);
+                        return match ? match[0].trim() : '-';
+                    }
+                    function findImg(card) {
+                        var img = card.querySelector('img');
+                        if (!img) return '';
+                        var ss = (img.getAttribute('srcset') || img.getAttribute('data-srcset') || '').trim();
+                        if (ss) { var parts = ss.split(','); var last = (parts[parts.length - 1] || '').trim().split(' ')[0]; if (last) return last; }
+                        return img.getAttribute('src') || img.getAttribute('data-src') || '';
+                    }
+                    function cleanTitle(raw) {
+                        var t = (raw || '').replace(/\s+/g, ' ').trim();
+                        var idx = t.toLowerCase().indexOf('brand:');
+                        if (idx > 0) t = t.slice(0, idx).replace(/[,-]\s*$/, '').trim();
+                        return t;
+                    }
+                    var items = [];
+                    var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href*="/items/"], a[data-testid="item-box"], [data-testid="feed-grid"] a[href]'));
+                    var seen = {};
+                    anchors.forEach(function(a){
+                        var href = a.getAttribute('href') || '';
+                        if (!href) return;
+                        var key = href.split('?')[0];
+                        if (seen[key]) return; seen[key] = true;
+                        var card = a.closest('li, article, div') || a;
+                        // Expand container for price search
+                        var container = card.closest('[data-testid="feed-grid"] li, li, article, div') || card;
+                        var titleNode = card.querySelector('[data-testid*="title" i], h3, h2, [class*="title" i], [data-testid="item-box"]');
+                        var rawTitle = (a.getAttribute('title') || (titleNode && titleNode.textContent) || a.textContent || '');
+                        var title = cleanTitle(rawTitle) || key;
+                        var img = findImg(card);
+                        var price = priceFrom(container);
+                        items.push({ title: title, productUrl: abs(href), imageUrl: absKeep(img), price: price });
+                    });
+                    return items;
+                });
+
+                (results || []).forEach(function (p) {
+                    products.push({ title: p.title || '', productUrl: p.productUrl || '', imageUrl: p.imageUrl || '', price: p.price || '-', detail: '', from: 'vinted' });
+                });
+                console.log('Vinted: extracted ' + ((results && results.length) || 0) + ' product(s) from ' + base);
+            } catch (e) {
+                console.error('Vinted error for', base, e && (e.message || e));
+            }
+        }
+        try {
+            if (saveFilePath) {
+                var vintedItems = products.filter(function(p){ return p.from === 'vinted'; });
+                saveProductsToFile(vintedItems, saveFilePath);
+            }
+        } catch(_e) {}
+    } catch (err) {
+        console.error('Vinted Puppeteer error:', err && (err.message || err));
+    } finally {
+        if (browser) { try { await browser.close(); } catch (e) {} }
+    }
+}
 async function saveAllProductsToMongo() {
   return saveProductsToMongo(products).then(function () {
     console.log('MongoDB upsert complete.');
@@ -2292,6 +2516,7 @@ async function main() {
         await subitoScrape();
         await chatterleyLuxuriesScrapePage('https://chatterleyluxuries.com/?post_type=product&s=montblanc+149&asp_active=1&p_asid=1&p_asp_data=1&filters_initial=1&filters_changed=0&qtranslate_lang=0&woo_currency=USD&current_page_id=378683&pr_stock=instock');
         await cruzaltpensScrapePage('https://www.cruzaltpens.com/en/module/ambjolisearch/jolisearch?s=montblanc+149');
+        await vintedScrapeDomains();
         // Write a snapshot of this run to the todayproducts collection (no indexes)
         // await saveProductsToTodayCollection(products);
         // saveProductsToFile(products);
@@ -2482,7 +2707,11 @@ app.get('/items', async function (req, res) {
     var q = (req.query.q || '').toString().trim();
     var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
-    var baseAnd = [ { title: /montblanc/i }, { title: /149/i } ];
+    var baseAnd = [];
+    // Apply default Montblanc/149 filters unless explicitly querying vinted
+    if (!/^vinted$/i.test(site)) {
+      baseAnd.push({ title: /montblanc/i }, { title: /149/i });
+    }
     if (titleFilter) baseAnd.push({ title: titleFilter });
     if (site) {
       var siteFilter = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
@@ -2516,7 +2745,10 @@ app.get('/items/today', async function (req, res) {
     var q = (req.query.q || '').toString().trim();
     var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
-    var baseAnd = [ { title: /montblanc/i }, { title: /149/i } ];
+    var baseAnd = [];
+    if (!/^vinted$/i.test(site)) {
+      baseAnd.push({ title: /montblanc/i }, { title: /149/i });
+    }
     if (titleFilter) baseAnd.push({ title: titleFilter });
     if (site) {
       var siteFilter = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
@@ -2559,13 +2791,11 @@ app.get('/items/last3days', async function (req, res) {
     var start = new Date();
     start.setDate(end.getDate() - 3);
     start.setHours(0, 0, 0, 0);
-    var query = {
-      $and: [
-        { title: /montblanc/i },
-        { title: /149/i },
-        { createdAt: { $gte: start, $lte: end } }
-      ]
-    };
+    var query = { $and: [] };
+    if (!/^vinted$/i.test(site)) {
+      query.$and.push({ title: /montblanc/i }, { title: /149/i });
+    }
+    query.$and.push({ createdAt: { $gte: start, $lte: end } });
     if (titleFilter) query.$and.push({ title: titleFilter });
     if (site) {
       var siteFilter3 = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
@@ -2598,13 +2828,11 @@ app.get('/items/saved', async function (req, res) {
     var q = (req.query.q || '').toString().trim();
     var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
-    var query = {
-      $and: [
-        { title: /montblanc/i },
-        { title: /149/i },
-        { like: true }
-      ]
-    };
+    var query = { $and: [] };
+    if (!/^vinted$/i.test(site)) {
+      query.$and.push({ title: /montblanc/i }, { title: /149/i });
+    }
+    query.$and.push({ like: true });
     if (titleFilter) query.$and.push({ title: titleFilter });
     if (site) {
       var siteFilter4 = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
@@ -2641,7 +2869,10 @@ app.get('/items/stats', async function (req, res) {
     last3Start.setDate(last3Start.getDate() - 3);
     last3Start.setHours(0, 0, 0, 0);
 
-    var baseFilter = { $and: [ { title: /montblanc/i }, { title: /149/i } ] };
+    var baseFilter = { $and: [] };
+    if (!/^vinted$/i.test(site)) {
+      baseFilter.$and.push({ title: /montblanc/i }, { title: /149/i });
+    }
     if (titleFilter) baseFilter.$and.push({ title: titleFilter });
     if (site) {
       var siteFilterStats = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
@@ -2888,6 +3119,7 @@ app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 startServer();
+// vintedScrapeDomains();
 // main();
 
 // --- Schedule daily scrape at 00:00 (system local time) ---
