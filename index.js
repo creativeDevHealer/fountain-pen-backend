@@ -3122,10 +3122,10 @@ startServer();
 // vintedScrapeDomains();
 // main();
 
-// --- Schedule daily scrape at 00:00 (system local time) ---
+// --- Schedule daily scrape forced every 3 hours ---
 var isScheduledRunInProgress = false;
-// Run scrape at 00:00, 06:00, 12:00, 18:00 (CET/CEST)
-cron.schedule('0 0,6,12,18 * * *', async function () {
+// Run scrape at 00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00 (CET/CEST)
+cron.schedule('0 0,3,6,9,12,15,18,21 * * *', async function () {
   if (isScheduledRunInProgress) {
     console.log('Cron: previous run still in progress; skipping this cycle.');
     return;
