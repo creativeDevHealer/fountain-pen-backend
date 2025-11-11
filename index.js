@@ -2738,6 +2738,41 @@ app.get('/items', async function (req, res) {
 });
 
 
+// Helper: Convert CET datetime to UTC Date object
+// Takes date string (YYYY-MM-DD) and time components in CET timezone
+function cetToUTC(dateStr, hour, minute, second, millisecond) {
+  // Parse date components
+  var dateParts = dateStr.split('-');
+  var year = parseInt(dateParts[0]);
+  var month = parseInt(dateParts[1]) - 1;
+  var day = parseInt(dateParts[2]);
+  
+  // Get the timezone offset for this date by checking what UTC noon is in CET
+  // This accounts for DST automatically
+  var utcNoon = new Date(Date.UTC(year, month, day, 12, 0, 0));
+  var cetNoonFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Paris',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+  var cetNoonParts = cetNoonFormatter.formatToParts(utcNoon);
+  var cetNoonHour = parseInt(cetNoonParts.find(function(p) { return p.type === 'hour'; }).value);
+  var cetNoonMin = parseInt(cetNoonParts.find(function(p) { return p.type === 'minute'; }).value);
+  
+  // Calculate offset: if UTC 12:00 = CET 13:00, offset is +1 hour (60 minutes)
+  // CET is ahead of UTC, so offset is positive
+  var offsetMinutes = (cetNoonHour - 12) * 60 + cetNoonMin;
+  
+  // Create UTC date for the target time, then subtract offset to get the UTC equivalent
+  // Since CET is ahead, we subtract the offset to get the earlier UTC time
+  var targetUTC = new Date(Date.UTC(year, month, day, hour, minute, second, millisecond || 0));
+  return new Date(targetUTC.getTime() - offsetMinutes * 60 * 1000);
+}
+
 // GET /items/today → items from todayproducts collection
 app.get('/items/today', async function (req, res) {
   try {
@@ -2754,10 +2789,19 @@ app.get('/items/today', async function (req, res) {
       var siteFilter = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
       baseAnd.push({ from: siteFilter });
     }
-    var end = new Date();
-    end.setHours(23, 59, 59, 999);
-    var start = new Date();
-    start.setHours(0, 0, 0, 0);
+    // Get current date in CET timezone (Europe/Paris) and calculate start/end of day in UTC
+    var now = new Date();
+    var cetDateFormatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Paris',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    var cetDateStr = cetDateFormatter.format(now); // Format: YYYY-MM-DD
+    
+    // Create start (00:00:00 CET) and end (23:59:59.999 CET) as UTC dates
+    var start = cetToUTC(cetDateStr, 0, 0, 0, 0);
+    var end = cetToUTC(cetDateStr, 23, 59, 59, 999);
     baseAnd.push({ createdAt: { $gte: start, $lte: end } });
     var items = await collection.find({ $and: baseAnd }).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
@@ -2779,6 +2823,7 @@ app.get('/items/today', async function (req, res) {
   }
 });
 
+
 // GET /items/last3days → items from last 3 days
 app.get('/items/last3days', async function (req, res) {
   try {
@@ -2786,21 +2831,43 @@ app.get('/items/last3days', async function (req, res) {
     var q = (req.query.q || '').toString().trim();
     var site = (req.query.site || '').toString().trim();
     var titleFilter = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
-    var end = new Date();
-    end.setHours(23, 59, 59, 999);
-    var start = new Date();
-    start.setDate(end.getDate() - 3);
-    start.setHours(0, 0, 0, 0);
     var query = { $and: [] };
     if (!/^vinted$/i.test(site)) {
       query.$and.push({ title: /montblanc/i }, { title: /149/i });
     }
-    query.$and.push({ createdAt: { $gte: start, $lte: end } });
     if (titleFilter) query.$and.push({ title: titleFilter });
     if (site) {
       var siteFilter3 = new RegExp('^' + site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
       query.$and.push({ from: siteFilter3 });
     }
+    
+    // Get current date in CET timezone (Europe/Paris)
+    var now = new Date();
+    var cetDateFormatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Paris',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    var cetDateStr = cetDateFormatter.format(now); // Format: YYYY-MM-DD (today in CET)
+    
+    // Calculate 3 days ago in CET by parsing today's date and subtracting 3 days
+    var dateParts = cetDateStr.split('-');
+    var year = parseInt(dateParts[0]);
+    var month = parseInt(dateParts[1]) - 1; // JavaScript months are 0-indexed
+    var day = parseInt(dateParts[2]);
+    
+    // Create a date object for today at noon in UTC (using date components from CET)
+    // Then subtract 3 days and format back in CET to get the correct date string
+    var todayAtNoonUTC = new Date(Date.UTC(year, month, day, 12, 0, 0));
+    var threeDaysAgoUTC = new Date(todayAtNoonUTC.getTime() - (3 * 24 * 60 * 60 * 1000));
+    var startDateStr = cetDateFormatter.format(threeDaysAgoUTC); // Format: YYYY-MM-DD (3 days ago in CET)
+    
+    // Create start (00:00:00 CET, 3 days ago) and end (23:59:59.999 CET, today) as UTC dates
+    var start = cetToUTC(startDateStr, 0, 0, 0, 0);
+    var end = cetToUTC(cetDateStr, 23, 59, 59, 999);
+    
+    query.$and.push({ createdAt: { $gte: start, $lte: end } });
     var items = await collection.find(query).sort({ createdAt: -1 }).toArray();
     var itemsList = items.map(function (item) {
       return {
